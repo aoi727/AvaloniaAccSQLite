@@ -1,0 +1,26 @@
+namespace AccountingApp.Models;
+
+public sealed record JournalLine(
+    long EntryId,
+    string Side,
+    int AccountId,
+    string AccountCode,
+    string AccountName,
+    int? SubAccountId,
+    string? SubAccountCode,
+    string? SubAccountName,
+    decimal Amount,
+    int? TaxCodeId,
+    decimal? TaxRate,
+    decimal TaxAmount,
+    decimal CreditableTaxAmount,
+    decimal NonCreditableTaxAmount,
+    string TaxInputType,
+    string? Description,
+    int? PartnerId = null,
+    string? PartnerCode = null,
+    string? PartnerName = null,
+    string? InvoiceNumber = null,
+    string? InvoiceRegistrationNumber = null,
+    string? InvoiceStatus = null,
+    decimal? PurchaseCreditRate = null);
