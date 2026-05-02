@@ -1,3 +1,4 @@
+using System.Text;
 using AccountingApp.Data;
 using AccountingApp.Models;
 using Avalonia;
@@ -28,6 +29,8 @@ public sealed class JournalBookView : UserControl
     private readonly TextBlock _debitTotal = ViewHelpers.Body("0");
     private readonly TextBlock _creditTotal = ViewHelpers.Body("0");
     private readonly Button _previousMonthButton = ViewHelpers.SecondaryButton("前月");
+    private readonly Button _importCsvButton = ViewHelpers.SecondaryButton("CSV取込");
+    private readonly Button _exportCsvButton = ViewHelpers.SecondaryButton("CSV出力");
     private readonly Button _exportPdfButton = ViewHelpers.SecondaryButton("PDF出力");
     private DateTime _targetMonth;
     private DateTime? _minimumMonth;
@@ -54,6 +57,12 @@ public sealed class JournalBookView : UserControl
         newButton.Width = 120;
         newButton.Click += (_, _) => _openJournalForm(null, _targetMonth);
 
+        _importCsvButton.Width = 100;
+        _importCsvButton.Click += async (_, _) => await ImportCsvAsync();
+
+        _exportCsvButton.Width = 100;
+        _exportCsvButton.Click += async (_, _) => await ExportCsvAsync();
+
         _exportPdfButton.Width = 100;
         _exportPdfButton.Click += async (_, _) => await ExportPdfAsync();
 
@@ -78,7 +87,7 @@ public sealed class JournalBookView : UserControl
             await LoadAsync();
         };
 
-        var currentButton = ViewHelpers.SecondaryButton("今月");
+        var currentButton = ViewHelpers.SecondaryButton("当月");
         currentButton.Width = 90;
         currentButton.Click += async (_, _) =>
         {
@@ -93,7 +102,7 @@ public sealed class JournalBookView : UserControl
 
         var header = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("*,Auto,12,Auto,12,Auto"),
+            ColumnDefinitions = new ColumnDefinitions("*,Auto,12,Auto,12,Auto,12,Auto,12,Auto"),
             Children =
             {
                 new StackPanel
@@ -104,14 +113,18 @@ public sealed class JournalBookView : UserControl
                         ViewHelpers.Body("仕訳帳")
                     }
                 },
+                _importCsvButton,
+                _exportCsvButton,
                 _exportPdfButton,
                 newButton,
                 backButton
             }
         };
-        Grid.SetColumn(_exportPdfButton, 1);
-        Grid.SetColumn(newButton, 3);
-        Grid.SetColumn(backButton, 5);
+        Grid.SetColumn(_importCsvButton, 1);
+        Grid.SetColumn(_exportCsvButton, 3);
+        Grid.SetColumn(_exportPdfButton, 5);
+        Grid.SetColumn(newButton, 7);
+        Grid.SetColumn(backButton, 9);
 
         var controls = ViewHelpers.Panel(new Grid
         {
@@ -205,7 +218,8 @@ public sealed class JournalBookView : UserControl
 
             _debitTotal.Text = rows.Sum(x => x.DebitAmount).ToString("N0");
             _creditTotal.Text = rows.Sum(x => x.CreditAmount).ToString("N0");
-            _message.Text = $"{rows.Count:N0} 行の仕訳を表示しています。";
+            var voucherCount = rows.Select(x => x.EntryNumber).Distinct(StringComparer.Ordinal).Count();
+            _message.Text = $"{voucherCount:N0} 件の伝票を表示しています。";
             _message.Foreground = Brush.Parse("#4A5568");
         }
         catch (Exception ex)
@@ -312,11 +326,123 @@ public sealed class JournalBookView : UserControl
         _previousMonthButton.IsEnabled = !_minimumMonth.HasValue || _targetMonth > _minimumMonth.Value;
     }
 
+    private async Task ExportCsvAsync()
+    {
+        if (_currentRows.Count == 0)
+        {
+            _message.Text = "CSV出力する仕訳データがありません。";
+            _message.Foreground = Brush.Parse("#B42318");
+            return;
+        }
+
+        var topLevel = TopLevel.GetTopLevel(this);
+        var storageProvider = topLevel?.StorageProvider;
+        if (storageProvider is null)
+        {
+            _message.Text = "保存ダイアログを開けませんでした。";
+            _message.Foreground = Brush.Parse("#B42318");
+            return;
+        }
+
+        var file = await storageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "仕訳帳CSVを保存",
+            SuggestedFileName = $"journal_{_targetMonth:yyyyMM}.csv",
+            DefaultExtension = "csv",
+            FileTypeChoices =
+            [
+                new FilePickerFileType("CSV")
+                {
+                    Patterns = ["*.csv"],
+                    MimeTypes = ["text/csv", "application/csv", "text/plain"]
+                }
+            ],
+            ShowOverwritePrompt = true
+        });
+
+        if (file is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _exportCsvButton.IsEnabled = false;
+            var rows = await _database.GetJournalCsvRowsAsync(_user.CompanyId, _targetMonth, _targetMonth.AddMonths(1));
+            var csv = JournalCsvSerializer.Serialize(rows);
+            await File.WriteAllTextAsync(file.Path.LocalPath, csv, new UTF8Encoding(false));
+            _message.Text = $"CSVを出力しました: {file.Name}";
+            _message.Foreground = Brush.Parse("#1E6B52");
+        }
+        catch (Exception ex)
+        {
+            _message.Text = ex.Message;
+            _message.Foreground = Brush.Parse("#B42318");
+        }
+        finally
+        {
+            _exportCsvButton.IsEnabled = true;
+        }
+    }
+
+    private async Task ImportCsvAsync()
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        var storageProvider = topLevel?.StorageProvider;
+        if (storageProvider is null)
+        {
+            _message.Text = "ファイル選択を開けませんでした。";
+            _message.Foreground = Brush.Parse("#B42318");
+            return;
+        }
+
+        var files = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "仕訳帳CSVを選択",
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("CSV")
+                {
+                    Patterns = ["*.csv"],
+                    MimeTypes = ["text/csv", "application/csv", "text/plain"]
+                },
+                FilePickerFileTypes.All
+            ]
+        });
+
+        var path = files.Count > 0 ? files[0].Path.LocalPath : null;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            _importCsvButton.IsEnabled = false;
+            var csvText = await File.ReadAllTextAsync(path, Encoding.UTF8);
+            var rows = JournalCsvSerializer.Deserialize(csvText);
+            await _database.ImportJournalCsvAsync(_user.CompanyId, _user.UserId, rows, _targetMonth);
+            await LoadAsync();
+            _message.Text = $"CSVを取り込みました: {Path.GetFileName(path)}";
+            _message.Foreground = Brush.Parse("#1E6B52");
+        }
+        catch (Exception ex)
+        {
+            _message.Text = ex.Message;
+            _message.Foreground = Brush.Parse("#B42318");
+        }
+        finally
+        {
+            _importCsvButton.IsEnabled = true;
+        }
+    }
+
     private async Task ExportPdfAsync()
     {
         if (_currentRows.Count == 0)
         {
-            _message.Text = "出力する仕訳帳がありません。";
+            _message.Text = "出力する仕訳データがありません。";
             _message.Foreground = Brush.Parse("#B42318");
             return;
         }
@@ -363,7 +489,7 @@ public sealed class JournalBookView : UserControl
             }
 
             var previewError = PdfPreviewLauncher.Open(file.Path.LocalPath);
-            _message.Text = previewError ?? $"PDFを保存しました: {file.Name}";
+            _message.Text = previewError ?? $"PDFを出力しました: {file.Name}";
             _message.Foreground = previewError is null ? Brush.Parse("#1E6B52") : Brush.Parse("#B8860B");
         }
         catch (Exception ex)

@@ -38,7 +38,8 @@ public sealed partial class SqliteDatabase
             DateTime entryDate,
             string? reference,
             int createdBy,
-            IReadOnlyList<JournalLineInput> lines)
+            IReadOnlyList<JournalLineInput> lines,
+            string? originalEntryNumber = null)
     {
         ValidateEntryNumber(entryNumber);
         ValidateVoucherLines(lines);
@@ -50,15 +51,45 @@ public sealed partial class SqliteDatabase
 
         try
         {
-            var existingDate = await GetJournalVoucherDateAsync(connection, transaction, companyId, entryNumber);
-            await EnsureJournalVoucherEditableAsync(connection, transaction, companyId, entryNumber, entryDate);
-            await DeleteJournalVoucherAsync(connection, transaction, companyId, entryNumber);
+            var normalizedEntryNumber = entryNumber.Trim();
+            var normalizedOriginalEntryNumber = string.IsNullOrWhiteSpace(originalEntryNumber)
+                ? normalizedEntryNumber
+                : originalEntryNumber.Trim();
+            var isRenamingExistingVoucher = !string.Equals(normalizedOriginalEntryNumber, normalizedEntryNumber, StringComparison.Ordinal);
+
+            var existingDate = await GetJournalVoucherDateAsync(connection, transaction, companyId, normalizedOriginalEntryNumber);
+            if (originalEntryNumber is not null && !existingDate.HasValue)
+            {
+                throw new InvalidOperationException("更新対象の仕訳が見つかりませんでした。");
+            }
+
+            await EnsureJournalDateOpenAsync(connection, transaction, companyId, entryDate);
+            if (existingDate.HasValue)
+            {
+                await EnsureJournalDateOpenAsync(connection, transaction, companyId, existingDate.Value);
+            }
+
+            if (isRenamingExistingVoucher)
+            {
+                var destinationExistingDate = await GetJournalVoucherDateAsync(connection, transaction, companyId, normalizedEntryNumber);
+                if (destinationExistingDate.HasValue)
+                {
+                    throw new InvalidOperationException($"変更後の伝票番号は既に使用されています: {normalizedEntryNumber}");
+                }
+
+                await DeleteJournalVoucherAsync(connection, transaction, companyId, normalizedOriginalEntryNumber);
+            }
+            else
+            {
+                await EnsureJournalVoucherEditableAsync(connection, transaction, companyId, normalizedEntryNumber, entryDate);
+                await DeleteJournalVoucherAsync(connection, transaction, companyId, normalizedEntryNumber);
+            }
 
             var voucherId = await InsertJournalVoucherAsync(
                 connection,
                 transaction,
                 companyId,
-                entryNumber,
+                normalizedEntryNumber,
                 entryDate,
                 reference,
                 createdBy);
@@ -83,7 +114,7 @@ public sealed partial class SqliteDatabase
                 createdBy,
                 existingDate.HasValue ? "journal_update" : "journal_create",
                 "journal",
-                entryNumber,
+                normalizedEntryNumber,
                 existingDate.HasValue ? $"仕訳を更新しました: {entryNumber}" : $"仕訳を登録しました: {entryNumber}");
 
             await transaction.CommitAsync();
@@ -273,7 +304,7 @@ public sealed partial class SqliteDatabase
     WHERE v.company_id = @company_id
       AND (@from_date IS NULL OR v.entry_date >= @from_date)
       AND (@to_date IS NULL OR v.entry_date < @to_date)
-    ORDER BY v.entry_date DESC, v.entry_number DESC, l.line_no";
+    ORDER BY v.entry_date, v.entry_number, l.line_no";
 
         var rows = new List<JournalBookRow>();
         await using var connection = new SqliteConnection(_connectionString);
@@ -340,7 +371,7 @@ public sealed partial class SqliteDatabase
       AND (@from_date IS NULL OR v.entry_date >= @from_date)
       AND (@to_date IS NULL OR v.entry_date < @to_date)
     GROUP BY v.voucher_id, v.entry_number, v.entry_date, v.reference
-    ORDER BY v.entry_date DESC, v.entry_number DESC";
+    ORDER BY v.entry_date, v.entry_number";
 
         var vouchers = new List<JournalVoucherSummary>();
         await using var connection = new SqliteConnection(_connectionString);
@@ -442,12 +473,188 @@ public sealed partial class SqliteDatabase
         return lines;
     }
 
-    public async Task<IReadOnlyList<CashbookLine>> GetCashbookLinesAsync(int companyId, int accountId, int? subAccountId)
+    public async Task<IReadOnlyList<JournalCsvRow>> GetJournalCsvRowsAsync(int companyId, DateTime? fromDate, DateTime? toDate)
+    {
+        const string sql = @"
+    SELECT v.entry_date,
+           v.entry_number,
+           v.reference,
+           l.side,
+           a.code AS account_code,
+           CASE
+               WHEN l.sub_account_id IS NULL OR l.sub_account_id = 0 THEN NULL
+               ELSE s.code
+           END AS sub_account_code,
+           l.amount,
+           tc.code AS tax_code,
+           l.tax_rate,
+           COALESCE(l.tax_amount, 0) AS tax_amount,
+           COALESCE(l.creditable_tax_amount, 0) AS creditable_tax_amount,
+           COALESCE(l.non_creditable_tax_amount, 0) AS non_creditable_tax_amount,
+           COALESCE(l.tax_input_type, 'none') AS tax_input_type,
+           p.code AS partner_code,
+           l.invoice_number,
+           l.invoice_registration_number,
+           l.invoice_status,
+           l.purchase_credit_rate,
+           l.description
+    FROM journal_vouchers v
+    JOIN journal_lines l ON l.voucher_id = v.voucher_id
+    JOIN accounts a ON a.account_id = l.account_id
+    LEFT JOIN sub_accounts s ON s.sub_account_id = NULLIF(l.sub_account_id, 0)
+    LEFT JOIN tax_codes tc ON tc.tax_code_id = l.tax_code_id
+    LEFT JOIN business_partners p ON p.partner_id = l.partner_id
+    WHERE v.company_id = @company_id
+      AND (@from_date IS NULL OR v.entry_date >= @from_date)
+      AND (@to_date IS NULL OR v.entry_date < @to_date)
+    ORDER BY v.entry_date, v.entry_number, l.line_no";
+
+        var rows = new List<JournalCsvRow>();
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync();
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("company_id", companyId);
+        command.Parameters.AddWithValue("from_date", (object?)(fromDate?.Date) ?? DBNull.Value);
+        command.Parameters.AddWithValue("to_date", (object?)(toDate?.Date) ?? DBNull.Value);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new JournalCsvRow(
+                reader.GetDateTime(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.GetDecimal(6),
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.IsDBNull(8) ? null : reader.GetDecimal(8),
+                reader.GetDecimal(9),
+                reader.GetDecimal(10),
+                reader.GetDecimal(11),
+                reader.GetString(12),
+                reader.IsDBNull(13) ? null : reader.GetString(13),
+                reader.IsDBNull(14) ? null : reader.GetString(14),
+                reader.IsDBNull(15) ? null : reader.GetString(15),
+                reader.IsDBNull(16) ? null : reader.GetString(16),
+                reader.IsDBNull(17) ? null : reader.GetDecimal(17),
+                reader.IsDBNull(18) ? null : reader.GetString(18)));
+        }
+
+        return rows;
+    }
+
+    public async Task ImportJournalCsvAsync(int companyId, int createdBy, IReadOnlyList<JournalCsvRow> rows, DateTime? expectedMonth = null)
+    {
+        if (rows.Count == 0)
+        {
+            throw new InvalidOperationException("インポートするCSV行がありません。");
+        }
+
+        if (expectedMonth.HasValue)
+        {
+            var monthStart = new DateTime(expectedMonth.Value.Year, expectedMonth.Value.Month, 1);
+            var monthEnd = monthStart.AddMonths(1);
+            if (rows.Any(x => x.EntryDate < monthStart || x.EntryDate >= monthEnd))
+            {
+                throw new InvalidOperationException("CSV内に現在表示中の月以外の仕訳日付が含まれています。");
+            }
+        }
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync();
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync();
+        var committed = false;
+
+        try
+        {
+            var accountMap = await LoadAccountCodeMapAsync(connection, transaction, companyId);
+            var subAccountMap = await LoadSubAccountCodeMapAsync(connection, transaction, companyId);
+            var taxCodeMap = await LoadTaxCodeMapAsync(connection, transaction, companyId);
+            var partnerCodeMap = await LoadPartnerCodeMapAsync(connection, transaction, companyId);
+
+            await EnsureOperationLogSchemaAsync(connection, transaction);
+
+            foreach (var batch in BuildImportBatches(rows))
+            {
+                var first = batch.Rows[0];
+                if (batch.Rows.Any(x => x.EntryDate != first.EntryDate))
+                {
+                    throw new InvalidOperationException($"伝票番号 {first.EntryNumber ?? "(自動採番)"} に複数の日付が混在しています。");
+                }
+
+                var reference = first.Reference;
+                if (batch.Rows.Any(x => !string.Equals(x.Reference ?? string.Empty, reference ?? string.Empty, StringComparison.Ordinal)))
+                {
+                    throw new InvalidOperationException($"伝票番号 {first.EntryNumber ?? "(自動採番)"} に複数の参照番号が混在しています。");
+                }
+
+                var entryNumber = string.IsNullOrWhiteSpace(batch.EntryNumber)
+                    ? await GetNextEntryNumberAsync(connection, transaction, companyId, first.EntryDate)
+                    : batch.EntryNumber;
+
+                var lineInputs = batch.Rows
+                    .Select(x => BuildJournalLineInputFromCsvRow(x, accountMap, subAccountMap, taxCodeMap, partnerCodeMap))
+                    .ToList();
+
+                ValidateVoucherLines(lineInputs);
+
+                var existingDate = await GetJournalVoucherDateAsync(connection, transaction, companyId, entryNumber);
+                await EnsureJournalVoucherEditableAsync(connection, transaction, companyId, entryNumber, first.EntryDate);
+                await DeleteAnnualCarryForwardExecutionAsync(connection, transaction, companyId, entryNumber);
+                await DeleteJournalVoucherAsync(connection, transaction, companyId, entryNumber);
+
+                var voucherId = await InsertJournalVoucherAsync(
+                    connection,
+                    transaction,
+                    companyId,
+                    entryNumber,
+                    first.EntryDate,
+                    reference,
+                    createdBy);
+
+                var lineNo = 1;
+                foreach (var line in lineInputs)
+                {
+                    await InsertJournalLineAsync(connection, transaction, voucherId, companyId, lineNo++, line);
+                }
+
+                await WriteOperationLogAsync(
+                    connection,
+                    transaction,
+                    companyId,
+                    createdBy,
+                    existingDate.HasValue ? "journal_update" : "journal_create",
+                    "journal",
+                    entryNumber,
+                    existingDate.HasValue
+                        ? $"CSVインポートで仕訳を更新しました: {entryNumber}"
+                        : $"CSVインポートで仕訳を作成しました: {entryNumber}");
+            }
+
+            await transaction.CommitAsync();
+            committed = true;
+            await RebuildSubAccountBalancesAsync(companyId);
+        }
+        catch
+        {
+            if (!committed)
+            {
+                await transaction.RollbackAsync();
+            }
+
+            throw;
+        }
+    }
+
+    public async Task<IReadOnlyList<CashbookLine>> GetCashbookLinesAsync(int companyId, int accountId, int? subAccountId, DateTime fromDate, DateTime toDate)
     {
         const string sql = @"
     WITH target_lines AS (
         SELECT l.line_id,
                l.voucher_id,
+               l.line_no,
                v.entry_date,
                v.entry_number,
                l.description,
@@ -463,6 +670,8 @@ public sealed partial class SqliteDatabase
         WHERE l.company_id = @company_id
           AND l.account_id = @account_id
           AND (@sub_account_id IS NULL OR l.sub_account_id = @sub_account_id)
+          AND v.entry_date >= @from_date
+          AND v.entry_date <= @to_date
     ),
     counterpart_summary AS (
         SELECT cl.voucher_id,
@@ -503,10 +712,10 @@ public sealed partial class SqliteDatabase
     LEFT JOIN counterpart_summary cp
       ON cp.voucher_id = t.voucher_id
      AND cp.side <> t.side
-    ORDER BY t.entry_date, t.line_id";
+    ORDER BY t.entry_date, t.entry_number, t.line_no, t.line_id";
 
         var lines = new List<CashbookLine>();
-        var balance = await GetOpeningBalanceAsync(companyId, accountId, subAccountId);
+        var balance = await GetOpeningBalanceAsync(companyId, accountId, subAccountId, fromDate);
 
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync();
@@ -514,6 +723,8 @@ public sealed partial class SqliteDatabase
         command.Parameters.AddWithValue("company_id", companyId);
         command.Parameters.AddWithValue("account_id", accountId);
         command.Parameters.AddWithValue("sub_account_id", (object?)(subAccountId) ?? DBNull.Value);
+        command.Parameters.AddWithValue("from_date", fromDate.Date);
+        command.Parameters.AddWithValue("to_date", toDate.Date);
 
         await using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
@@ -543,9 +754,9 @@ public sealed partial class SqliteDatabase
         return lines;
     }
 
-    public async Task<decimal> GetCashbookOpeningBalanceAsync(int companyId, int accountId, int? subAccountId)
+    public async Task<decimal> GetCashbookOpeningBalanceAsync(int companyId, int accountId, int? subAccountId, DateTime fromDate)
     {
-        return await GetOpeningBalanceAsync(companyId, accountId, subAccountId);
+        return await GetOpeningBalanceAsync(companyId, accountId, subAccountId, fromDate);
     }
 
     public async Task<IReadOnlyList<GeneralLedgerLine>> GetGeneralLedgerLinesAsync(int companyId, int accountId, int? subAccountId, DateTime fromDate, DateTime toDate)
@@ -560,6 +771,7 @@ public sealed partial class SqliteDatabase
     target_lines AS (
         SELECT l.line_id,
                l.voucher_id,
+               l.line_no,
                v.entry_date,
                v.entry_number,
                l.description,
@@ -625,7 +837,7 @@ public sealed partial class SqliteDatabase
     LEFT JOIN counterpart_summary cp
       ON cp.voucher_id = t.voucher_id
      AND cp.side <> t.side
-    ORDER BY t.entry_date, t.line_id";
+    ORDER BY t.entry_date, t.entry_number, t.line_no, t.line_id";
 
         var lines = new List<GeneralLedgerLine>();
         var balance = await GetOpeningBalanceAsync(companyId, accountId, subAccountId, fromDate);
@@ -785,6 +997,253 @@ public sealed partial class SqliteDatabase
         var result = await command.ExecuteScalarAsync();
         return Convert.ToInt64(result);
     }
+
+    private static JournalLineInput BuildJournalLineInputFromCsvRow(
+        JournalCsvRow row,
+        IReadOnlyDictionary<string, int> accountMap,
+        IReadOnlyDictionary<string, int> subAccountMap,
+        IReadOnlyDictionary<string, int> taxCodeMap,
+        IReadOnlyDictionary<string, int> partnerCodeMap)
+    {
+        if (!accountMap.TryGetValue(row.AccountCode, out var accountId))
+        {
+            throw new InvalidOperationException($"勘定科目コードが見つかりません: {row.AccountCode}");
+        }
+
+        int? subAccountId = null;
+        if (!string.IsNullOrWhiteSpace(row.SubAccountCode))
+        {
+            var subAccountKey = BuildSubAccountKey(accountId, row.SubAccountCode);
+            if (!subAccountMap.TryGetValue(subAccountKey, out var resolvedSubAccountId))
+            {
+                throw new InvalidOperationException($"補助科目コードが見つかりません: {row.AccountCode} / {row.SubAccountCode}");
+            }
+
+            subAccountId = resolvedSubAccountId;
+        }
+
+        int? taxCodeId = null;
+        if (!string.IsNullOrWhiteSpace(row.TaxCode))
+        {
+            if (!taxCodeMap.TryGetValue(row.TaxCode, out var resolvedTaxCodeId))
+            {
+                throw new InvalidOperationException($"税区分コードが見つかりません: {row.TaxCode}");
+            }
+
+            taxCodeId = resolvedTaxCodeId;
+        }
+
+        int? partnerId = null;
+        if (!string.IsNullOrWhiteSpace(row.PartnerCode))
+        {
+            if (!partnerCodeMap.TryGetValue(row.PartnerCode, out var resolvedPartnerId))
+            {
+                throw new InvalidOperationException($"取引先コードが見つかりません: {row.PartnerCode}");
+            }
+
+            partnerId = resolvedPartnerId;
+        }
+
+        return new JournalLineInput(
+            row.Side,
+            accountId,
+            subAccountId,
+            row.Amount,
+            taxCodeId,
+            row.TaxRate,
+            row.TaxAmount,
+            row.CreditableTaxAmount,
+            row.NonCreditableTaxAmount,
+            string.IsNullOrWhiteSpace(row.TaxInputType) ? "none" : row.TaxInputType,
+            row.Description,
+            partnerId,
+            row.InvoiceNumber,
+            row.InvoiceRegistrationNumber,
+            row.InvoiceStatus,
+            row.PurchaseCreditRate);
+    }
+
+    private static List<ImportVoucherBatch> BuildImportBatches(IReadOnlyList<JournalCsvRow> rows)
+    {
+        var batches = new List<ImportVoucherBatch>();
+        var blankBuffer = new List<JournalCsvRow>();
+
+        void FlushBlankBuffer()
+        {
+            if (blankBuffer.Count == 0)
+            {
+                return;
+            }
+
+            var first = blankBuffer[0];
+            if (blankBuffer.Count != 2 ||
+                blankBuffer.Count(x => x.Side == "debit") != 1 ||
+                blankBuffer.Count(x => x.Side == "credit") != 1)
+            {
+                throw new InvalidOperationException("伝票番号が空欄のCSVは単一仕訳のみ取り込めます。複合仕訳は伝票番号を指定してください。");
+            }
+
+            batches.Add(new ImportVoucherBatch(null, blankBuffer.ToList()));
+            blankBuffer.Clear();
+        }
+
+        foreach (var row in rows)
+        {
+            if (!string.IsNullOrWhiteSpace(row.EntryNumber))
+            {
+                FlushBlankBuffer();
+                batches.Add(new ImportVoucherBatch(row.EntryNumber.Trim(), [row]));
+                continue;
+            }
+
+            if (blankBuffer.Count == 0)
+            {
+                blankBuffer.Add(row);
+                continue;
+            }
+
+            var first = blankBuffer[0];
+            var sameBatch =
+                row.EntryDate == first.EntryDate &&
+                string.Equals(row.Reference ?? string.Empty, first.Reference ?? string.Empty, StringComparison.Ordinal) &&
+                string.Equals(row.Description ?? string.Empty, first.Description ?? string.Empty, StringComparison.Ordinal);
+
+            if (!sameBatch)
+            {
+                FlushBlankBuffer();
+            }
+
+            blankBuffer.Add(row);
+        }
+
+        FlushBlankBuffer();
+
+        return batches
+            .GroupBy(x => x.EntryNumber, StringComparer.Ordinal)
+            .SelectMany(group =>
+            {
+                if (string.IsNullOrWhiteSpace(group.Key))
+                {
+                    return group;
+                }
+
+                var combinedRows = group.SelectMany(x => x.Rows).ToList();
+                return [new ImportVoucherBatch(group.Key, combinedRows)];
+            })
+            .ToList();
+    }
+
+    private static async Task<Dictionary<string, int>> LoadAccountCodeMapAsync(SqliteConnection connection, SqliteTransaction transaction, int companyId)
+    {
+        const string sql = @"
+    SELECT code, account_id
+    FROM accounts
+    WHERE company_id = @company_id";
+
+        var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("company_id", companyId);
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            map[reader.GetString(0)] = reader.GetInt32(1);
+        }
+
+        return map;
+    }
+
+    private static async Task<Dictionary<string, int>> LoadSubAccountCodeMapAsync(SqliteConnection connection, SqliteTransaction transaction, int companyId)
+    {
+        const string sql = @"
+    SELECT account_id, code, sub_account_id
+    FROM sub_accounts
+    WHERE company_id = @company_id";
+
+        var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("company_id", companyId);
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            map[BuildSubAccountKey(reader.GetInt32(0), reader.GetString(1))] = reader.GetInt32(2);
+        }
+
+        return map;
+    }
+
+    private static async Task<Dictionary<string, int>> LoadTaxCodeMapAsync(SqliteConnection connection, SqliteTransaction transaction, int companyId)
+    {
+        const string sql = @"
+    SELECT code, tax_code_id
+    FROM tax_codes
+    WHERE company_id = @company_id";
+
+        var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("company_id", companyId);
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            map[reader.GetString(0)] = reader.GetInt32(1);
+        }
+
+        return map;
+    }
+
+    private static async Task<Dictionary<string, int>> LoadPartnerCodeMapAsync(SqliteConnection connection, SqliteTransaction transaction, int companyId)
+    {
+        const string sql = @"
+    SELECT code, partner_id
+    FROM business_partners
+    WHERE company_id = @company_id";
+
+        var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("company_id", companyId);
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            map[reader.GetString(0)] = reader.GetInt32(1);
+        }
+
+        return map;
+    }
+
+    private static string BuildSubAccountKey(int accountId, string subAccountCode)
+    {
+        return $"{accountId}:{subAccountCode.Trim()}";
+    }
+
+    private static async Task<string> GetNextEntryNumberAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        int companyId,
+        DateTime entryDate)
+    {
+        var prefix = $"J{entryDate:yyyyMMdd}-";
+        const string sql = @"
+    SELECT MAX(entry_number)
+    FROM journal_vouchers
+    WHERE company_id = @company_id
+      AND entry_number LIKE @prefix";
+
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("company_id", companyId);
+        command.Parameters.AddWithValue("prefix", prefix + "%");
+        var result = await command.ExecuteScalarAsync();
+        var maxNumber = result == DBNull.Value ? null : Convert.ToString(result);
+
+        var next = 1;
+        if (!string.IsNullOrWhiteSpace(maxNumber) &&
+            TryExtractEntryNumberSequence(maxNumber, prefix, out var current))
+        {
+            next = current + 1;
+        }
+
+        return prefix + next.ToString("0000");
+    }
+
+    private sealed record ImportVoucherBatch(string? EntryNumber, IReadOnlyList<JournalCsvRow> Rows);
 
     private static async Task InsertJournalLineAsync(
             SqliteConnection connection,

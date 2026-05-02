@@ -1,0 +1,10 @@
+entry_date,entry_number,reference,side,account_code,sub_account_code,amount,tax_code,tax_rate,tax_amount,creditable_tax_amount,non_creditable_tax_amount,tax_input_type,partner_code,invoice_number,invoice_registration_number,invoice_status,purchase_credit_rate,description
+2026-05-01,J20260501-0001,OPENING,debit,1018,,500000,OUT,0,0,0,0,none,,,,,,元入金
+2026-05-01,J20260501-0001,OPENING,credit,8015,,500000,OUT,0,0,0,0,none,,,,,,元入金
+2026-05-08,J20260508-0001,INV-20260508-01,debit,6659,,11000,PURCHASE10,10,1000,1000,0,excluded,SUP001,INV-20260508-01,T1234567890123,qualified,100,事務用品購入
+2026-05-08,J20260508-0001,INV-20260508-01,credit,1018,,11000,OUT,0,0,0,0,none,SUP001,INV-20260508-01,T1234567890123,qualified,100,事務用品購入
+2026-05-12,J20260512-0001,SALE-20260512-01,debit,1018,,55000,OUT,0,0,0,0,none,CUS001,SALE-20260512-01,T1234567890123,qualified,100,売上入金
+2026-05-12,J20260512-0001,SALE-20260512-01,credit,4011,,50000,SALES10,10,5000,0,0,included,CUS001,SALE-20260512-01,T1234567890123,qualified,100,売上入金
+2026-05-12,J20260512-0001,SALE-20260512-01,credit,3357,,5000,OUT,0,0,0,0,none,CUS001,SALE-20260512-01,T1234567890123,qualified,100,売上入金
+2026-05-20,,AUTO-SINGLE-001,debit,6659,,3300,PURCHASE10,10,300,300,0,excluded,SUP001,INV-20260520-01,T1234567890123,qualified,100,伝票番号空欄の単一仕訳
+2026-05-20,,AUTO-SINGLE-001,credit,1018,,3300,OUT,0,0,0,0,none,SUP001,INV-20260520-01,T1234567890123,qualified,100,伝票番号空欄の単一仕訳

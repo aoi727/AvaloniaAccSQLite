@@ -72,7 +72,8 @@ public sealed partial class SqliteDatabase
         string displayName,
         string password,
         string taxEntryMethod = "gross",
-        bool isTaxExempt = false)
+        bool isTaxExempt = false,
+        string? accountSeedCsvPath = null)
     {
         var passwordHash = PasswordHasher.Create(password);
 
@@ -87,7 +88,7 @@ public sealed partial class SqliteDatabase
             var userId = await InsertUserAsync(connection, transaction, loginId, displayName, passwordHash);
             await InsertUserCompanyAsync(connection, transaction, userId, companyId, "admin");
             await InsertDefaultTaxCodesAsync(connection, transaction, companyId);
-            await InsertDefaultAccountsAsync(connection, transaction, companyId);
+            await InsertDefaultAccountsAsync(connection, transaction, companyId, accountSeedCsvPath);
             await transaction.CommitAsync();
             committed = true;
             return new AppUser(userId, loginId, displayName, companyId, companyName, "admin");

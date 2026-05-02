@@ -191,6 +191,158 @@ public sealed partial class SqliteDatabase
         await command.ExecuteNonQueryAsync();
     }
 
+    public async Task<IReadOnlyList<AccountCsvRow>> GetAccountCsvRowsAsync(int companyId)
+    {
+        const string sql = @"
+    SELECT a.code,
+           a.name,
+           a.account_type,
+           a.balance_side,
+           a.is_control_account,
+           t.code AS default_tax_code,
+           a.is_active
+    FROM accounts a
+    LEFT JOIN tax_codes t
+      ON t.tax_code_id = a.default_tax_code_id
+    WHERE a.company_id = @company_id
+    ORDER BY a.code";
+
+        var rows = new List<AccountCsvRow>();
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync();
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("company_id", companyId);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new AccountCsvRow(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetBoolean(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.GetBoolean(6)));
+        }
+
+        return rows;
+    }
+
+    public async Task ImportAccountCsvAsync(int companyId, IReadOnlyList<AccountCsvRow> rows)
+    {
+        if (rows.Count == 0)
+        {
+            throw new InvalidOperationException("インポートする勘定科目CSV行がありません。");
+        }
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync();
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync();
+        var committed = false;
+
+        try
+        {
+            var existingAccounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            const string existingSql = @"
+    SELECT account_id, code
+    FROM accounts
+    WHERE company_id = @company_id";
+
+            await using (var existingCommand = new SqliteCommand(existingSql, connection, transaction))
+            {
+                existingCommand.Parameters.AddWithValue("company_id", companyId);
+                await using var reader = await existingCommand.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    existingAccounts[reader.GetString(1)] = reader.GetInt32(0);
+                }
+            }
+
+            var taxCodeMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            const string taxSql = @"
+    SELECT code, tax_code_id
+    FROM tax_codes
+    WHERE company_id = @company_id";
+
+            await using (var taxCommand = new SqliteCommand(taxSql, connection, transaction))
+            {
+                taxCommand.Parameters.AddWithValue("company_id", companyId);
+                await using var reader = await taxCommand.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    taxCodeMap[reader.GetString(0)] = reader.GetInt32(1);
+                }
+            }
+
+            const string upsertSql = @"
+    INSERT INTO accounts (
+        company_id, code, name, account_type, balance_side, is_control_account, default_tax_code_id, is_active
+    )
+    VALUES (
+        @company_id, @code, @name, @account_type, @balance_side, @is_control_account, @default_tax_code_id, @is_active
+    )
+    ON CONFLICT (company_id, code) DO UPDATE
+    SET name = EXCLUDED.name,
+        account_type = EXCLUDED.account_type,
+        balance_side = EXCLUDED.balance_side,
+        is_control_account = EXCLUDED.is_control_account,
+        default_tax_code_id = EXCLUDED.default_tax_code_id,
+        is_active = EXCLUDED.is_active
+    RETURNING account_id";
+
+            foreach (var row in rows)
+            {
+                if (existingAccounts.TryGetValue(row.Code, out var existingAccountId)
+                    && !row.IsControlAccount
+                    && await HasSubAccountsAsync(connection, companyId, existingAccountId))
+                {
+                    throw new InvalidOperationException($"補助科目があるため、勘定科目 {row.Code} を補助なしに変更できません。");
+                }
+
+                int? defaultTaxCodeId = null;
+                if (!string.IsNullOrWhiteSpace(row.DefaultTaxCode))
+                {
+                    if (!taxCodeMap.TryGetValue(row.DefaultTaxCode, out var taxCodeId))
+                    {
+                        throw new InvalidOperationException($"既定税区分が見つかりません: {row.DefaultTaxCode}");
+                    }
+
+                    defaultTaxCodeId = taxCodeId;
+                }
+
+                await using var command = new SqliteCommand(upsertSql, connection, transaction);
+                command.Parameters.AddWithValue("company_id", companyId);
+                command.Parameters.AddWithValue("code", row.Code);
+                command.Parameters.AddWithValue("name", row.Name);
+                command.Parameters.AddWithValue("account_type", row.AccountType);
+                command.Parameters.AddWithValue("balance_side", row.BalanceSide);
+                command.Parameters.AddWithValue("is_control_account", row.IsControlAccount);
+                command.Parameters.AddWithValue("default_tax_code_id", (object?)defaultTaxCodeId ?? DBNull.Value);
+                command.Parameters.AddWithValue("is_active", row.IsActive);
+                var accountId = Convert.ToInt32(await command.ExecuteScalarAsync());
+
+                if (row.IsControlAccount)
+                {
+                    await InsertDefaultSubAccountAsync(connection, transaction, companyId, accountId, row.Name);
+                }
+            }
+
+            await transaction.CommitAsync();
+            committed = true;
+            await RebuildSubAccountBalancesAsync(companyId);
+        }
+        catch
+        {
+            if (!committed)
+            {
+                await transaction.RollbackAsync();
+            }
+
+            throw;
+        }
+    }
+
     private static async Task<string?> GetAccountHideBlockReasonAsync(SqliteConnection connection, int companyId, int accountId)
     {
         const string usedSql = @"

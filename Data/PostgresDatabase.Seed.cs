@@ -64,8 +64,23 @@ public sealed partial class SqliteDatabase
         await command.ExecuteNonQueryAsync();
     }
 
-    private static async Task InsertDefaultAccountsAsync(SqliteConnection connection, SqliteTransaction transaction, int companyId)
+    private static async Task InsertDefaultAccountsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        int companyId,
+        string? accountSeedCsvPath = null)
     {
+        if (!string.IsNullOrWhiteSpace(accountSeedCsvPath))
+        {
+            var imported = await TryInsertAccountsFromSeedCsvAsync(connection, transaction, companyId, accountSeedCsvPath);
+            if (!imported)
+            {
+                throw new InvalidOperationException("勘定科目CSVを読み込めませんでした。seed_accounts.csv と同じ列構成か確認してください。");
+            }
+
+            return;
+        }
+
         var seeded = await TryInsertAccountsFromSeedCsvAsync(connection, transaction, companyId);
         if (seeded)
         {
@@ -111,15 +126,22 @@ public sealed partial class SqliteDatabase
         }
     }
 
-    private static async Task<bool> TryInsertAccountsFromSeedCsvAsync(SqliteConnection connection, SqliteTransaction transaction, int companyId)
+    private static async Task<bool> TryInsertAccountsFromSeedCsvAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        int companyId,
+        string? csvPath = null)
     {
-        var csvPath = ResolveDatabaseScriptPath("seed_accounts.csv");
-        if (!File.Exists(csvPath))
+        var sourcePath = string.IsNullOrWhiteSpace(csvPath)
+            ? ResolveDatabaseScriptPath("seed_accounts.csv")
+            : csvPath;
+
+        if (!File.Exists(sourcePath))
         {
             return false;
         }
 
-        var accounts = await LoadSeedAccountsAsync(csvPath);
+        var accounts = await LoadSeedAccountsAsync(sourcePath);
         if (accounts.Count == 0)
         {
             return false;

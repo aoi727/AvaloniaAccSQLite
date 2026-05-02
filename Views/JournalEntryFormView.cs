@@ -40,6 +40,7 @@ public sealed class JournalEntryFormView : UserControl
     private readonly TextBlock _balanceMessage = ViewHelpers.Body("");
     private readonly TextBlock _message = ViewHelpers.Body("振替伝票を入力してください。");
     private readonly Button _saveButton = ViewHelpers.PrimaryButton("登録");
+    private readonly Button _deleteButton = CreateDeleteButton();
     private readonly List<Account> _accounts = [];
     private readonly List<Account> _selectableAccounts = [];
     private readonly List<SubAccount> _subAccounts = [];
@@ -73,6 +74,9 @@ public sealed class JournalEntryFormView : UserControl
         backButton.Click += (_, _) => _backToDashboard();
 
         _saveButton.Width = 120;
+        _deleteButton.Width = 120;
+        _deleteButton.IsVisible = _editingEntryNumber is not null;
+        _deleteButton.Click += async (_, _) => await ConfirmAndDeleteAsync();
         backButton.Width = 120;
         _entryDate.MinWidth = 170;
         _entryNumber.MinWidth = 185;
@@ -124,7 +128,7 @@ public sealed class JournalEntryFormView : UserControl
 
         var meta = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("170,14,185,14,170,16,*,16,120,12,120"),
+            ColumnDefinitions = new ColumnDefinitions("170,14,185,14,170,16,*,16,120,12,120,12,120"),
             Children =
             {
                 Field("取引日", _entryDate, 0),
@@ -132,12 +136,14 @@ public sealed class JournalEntryFormView : UserControl
                 Field("証憑番号", _reference, 4),
                 status,
                 _saveButton,
+                _deleteButton,
                 backButton
             }
         };
         Grid.SetColumn(status, 6);
         Grid.SetColumn(_saveButton, 8);
-        Grid.SetColumn(backButton, 10);
+        Grid.SetColumn(_deleteButton, 10);
+        Grid.SetColumn(backButton, 12);
 
         var singleModePanel = ViewHelpers.Panel(new StackPanel
         {
@@ -435,6 +441,14 @@ public sealed class JournalEntryFormView : UserControl
             Padding = new Thickness(8, 4),
             MinHeight = 30
         };
+    }
+
+    private static Button CreateDeleteButton()
+    {
+        var button = ViewHelpers.SecondaryButton("削除");
+        button.Background = Brush.Parse("#B42318");
+        button.Foreground = Brushes.White;
+        return button;
     }
 
     private async Task LoadAsync()
@@ -839,6 +853,83 @@ public sealed class JournalEntryFormView : UserControl
         await dialog.ShowDialog(owner);
     }
 
+    private async Task ConfirmAndDeleteAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_editingEntryNumber))
+        {
+            return;
+        }
+
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            SetMessage("削除確認ダイアログを表示できませんでした。", true);
+            return;
+        }
+
+        var executeButton = ViewHelpers.PrimaryButton("削除する");
+        executeButton.Width = 120;
+        executeButton.Background = Brush.Parse("#B42318");
+
+        var cancelButton = ViewHelpers.SecondaryButton("キャンセル");
+        cancelButton.Width = 120;
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 12,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Children = { executeButton, cancelButton }
+        };
+
+        var dialog = new Window
+        {
+            Title = "仕訳削除確認",
+            Width = 520,
+            Height = 220,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = ViewHelpers.Panel(new StackPanel
+            {
+                Margin = new Thickness(20),
+                Spacing = 18,
+                Children =
+                {
+                    ViewHelpers.Heading("この仕訳を削除しますか。", 22),
+                    ViewHelpers.Body($"伝票番号: {_editingEntryNumber}"),
+                    ViewHelpers.Body("削除するとその伝票に含まれるすべての仕訳行が削除され、残高も再計算されます。"),
+                    buttons
+                }
+            })
+        };
+
+        executeButton.Click += (_, _) => dialog.Close(true);
+        cancelButton.Click += (_, _) => dialog.Close(false);
+
+        var confirmed = await dialog.ShowDialog<bool>(owner);
+        if (!confirmed)
+        {
+            return;
+        }
+
+        try
+        {
+            _deleteButton.IsEnabled = false;
+            _saveButton.IsEnabled = false;
+            await _database.DeleteJournalVoucherAsync(_user.CompanyId, _user.UserId, _editingEntryNumber);
+            SetMessage($"仕訳を削除しました: {_editingEntryNumber}", false);
+            _backToDashboard();
+        }
+        catch (Exception ex)
+        {
+            SetMessage(ex.Message, true);
+        }
+        finally
+        {
+            _deleteButton.IsEnabled = true;
+            _saveButton.IsEnabled = true;
+        }
+    }
+
     private async Task ClearForNextInputAsync(DateTime entryDate)
     {
         _reference.Text = "";
@@ -975,7 +1066,8 @@ public sealed class JournalEntryFormView : UserControl
                 date,
                 _reference.Text,
                 _user.UserId,
-                inputs);
+                inputs,
+                _editingEntryNumber);
 
             await ShowNoticeAsync(
                 "登録完了",

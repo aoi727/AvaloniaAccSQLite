@@ -4,7 +4,9 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using Microsoft.Data.Sqlite;
+using System.Text;
 
 namespace AccountingApp.Views;
 
@@ -27,6 +29,8 @@ public sealed class AccountFormView : UserControl
     private readonly TextBlock _message = ViewHelpers.Body("勘定科目を登録・編集できます。");
     private readonly Button _saveButton = ViewHelpers.PrimaryButton("登録する");
     private readonly Button _newButton = ViewHelpers.SecondaryButton("新規に戻す");
+    private readonly Button _importCsvButton = ViewHelpers.SecondaryButton("CSV取込");
+    private readonly Button _exportCsvButton = ViewHelpers.SecondaryButton("CSV保存");
     private readonly List<TaxCode> _taxCodes = [];
     private int? _editingAccountId;
 
@@ -39,6 +43,8 @@ public sealed class AccountFormView : UserControl
         Content = Build();
         _saveButton.Click += async (_, _) => await SaveAsync();
         _newButton.Click += (_, _) => ClearForm();
+        _importCsvButton.Click += async (_, _) => await ImportCsvAsync();
+        _exportCsvButton.Click += async (_, _) => await ExportCsvAsync();
         _accountType.SelectionChanged += (_, _) => ApplySuggestedBalanceSide();
         _ = LoadAsync();
     }
@@ -77,6 +83,8 @@ public sealed class AccountFormView : UserControl
                 new Border { Height = 8 },
                 _saveButton,
                 _newButton,
+                _importCsvButton,
+                _exportCsvButton,
                 openSubAccountButton,
                 _message
             }
@@ -410,6 +418,105 @@ public sealed class AccountFormView : UserControl
         finally
         {
             _saveButton.IsEnabled = true;
+        }
+    }
+
+    private async Task ExportCsvAsync()
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        var storageProvider = topLevel?.StorageProvider;
+        if (storageProvider is null)
+        {
+            SetMessage("保存ダイアログを開けませんでした。", true);
+            return;
+        }
+
+        var file = await storageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "勘定科目CSVを保存",
+            SuggestedFileName = "accounts.csv",
+            DefaultExtension = "csv",
+            FileTypeChoices =
+            [
+                new FilePickerFileType("CSV")
+                {
+                    Patterns = ["*.csv"],
+                    MimeTypes = ["text/csv", "application/csv", "text/plain"]
+                }
+            ],
+            ShowOverwritePrompt = true
+        });
+
+        if (file is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _exportCsvButton.IsEnabled = false;
+            var rows = await _database.GetAccountCsvRowsAsync(_user.CompanyId);
+            var csv = AccountCsvSerializer.Serialize(rows);
+            await File.WriteAllTextAsync(file.Path.LocalPath, csv, new UTF8Encoding(false));
+            SetMessage($"CSVを保存しました: {file.Name}", false);
+        }
+        catch (Exception ex)
+        {
+            SetMessage(ex.Message, true);
+        }
+        finally
+        {
+            _exportCsvButton.IsEnabled = true;
+        }
+    }
+
+    private async Task ImportCsvAsync()
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        var storageProvider = topLevel?.StorageProvider;
+        if (storageProvider is null)
+        {
+            SetMessage("ファイル選択を開けませんでした。", true);
+            return;
+        }
+
+        var files = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "勘定科目CSVを選択",
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("CSV")
+                {
+                    Patterns = ["*.csv"],
+                    MimeTypes = ["text/csv", "application/csv", "text/plain"]
+                },
+                FilePickerFileTypes.All
+            ]
+        });
+
+        var path = files.Count > 0 ? files[0].Path.LocalPath : null;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            _importCsvButton.IsEnabled = false;
+            var csvText = await File.ReadAllTextAsync(path, Encoding.UTF8);
+            var rows = AccountCsvSerializer.Deserialize(csvText);
+            await _database.ImportAccountCsvAsync(_user.CompanyId, rows);
+            await LoadAsync();
+            SetMessage($"CSVを取り込みました: {Path.GetFileName(path)}", false);
+        }
+        catch (Exception ex)
+        {
+            SetMessage(ex.Message, true);
+        }
+        finally
+        {
+            _importCsvButton.IsEnabled = true;
         }
     }
 

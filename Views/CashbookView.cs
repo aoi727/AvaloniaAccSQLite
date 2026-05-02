@@ -25,13 +25,19 @@ public sealed class CashbookView : UserControl
     private readonly ComboBox _account = new() { MinWidth = 220 };
     private readonly ComboBox _subAccount = new() { IsEnabled = false, MinWidth = 280 };
     private readonly StackPanel _lines = new() { Spacing = 0 };
+    private readonly TextBlock _periodLabel = ViewHelpers.Heading("", 18);
     private readonly TextBlock _message = ViewHelpers.Body("出納帳を読み込みます。");
     private readonly TextBlock _carryForward = ViewHelpers.Body("0");
     private readonly TextBlock _receiptTotal = ViewHelpers.Body("0");
     private readonly TextBlock _paymentTotal = ViewHelpers.Body("0");
     private readonly TextBlock _endingBalance = ViewHelpers.Body("0");
+    private readonly Button _previousPeriodButton = ViewHelpers.SecondaryButton("前月");
     private readonly List<Account> _accounts = [];
     private readonly List<SubAccount> _subAccounts = [];
+    private DateTime _periodStart;
+    private DateTime _periodEnd;
+    private DateTime _minimumDate;
+    private int _closingDay = 31;
 
     public CashbookView(SqliteDatabase database, AppUser user, Action backToDashboard, Action<string?> openJournalForm)
     {
@@ -59,6 +65,35 @@ public sealed class CashbookView : UserControl
         refreshButton.Width = 100;
         refreshButton.Click += async (_, _) => await LoadLedgerAsync();
 
+        _previousPeriodButton.Width = 90;
+        _previousPeriodButton.Click += async (_, _) =>
+        {
+            (_periodStart, _periodEnd) = ClampPeriodToMinimum(
+                GetPeriodRangeContaining(_periodStart.AddDays(-1), _closingDay),
+                _minimumDate,
+                _closingDay);
+            await LoadLedgerAsync();
+        };
+
+        var nextPeriodButton = ViewHelpers.SecondaryButton("次月");
+        nextPeriodButton.Width = 90;
+        nextPeriodButton.Click += async (_, _) =>
+        {
+            (_periodStart, _periodEnd) = GetPeriodRangeContaining(_periodEnd.AddDays(1), _closingDay);
+            await LoadLedgerAsync();
+        };
+
+        var currentPeriodButton = ViewHelpers.SecondaryButton("当月");
+        currentPeriodButton.Width = 90;
+        currentPeriodButton.Click += async (_, _) =>
+        {
+            (_periodStart, _periodEnd) = ClampPeriodToMinimum(
+                GetPeriodRangeContaining(DateTime.Today, _closingDay),
+                _minimumDate,
+                _closingDay);
+            await LoadLedgerAsync();
+        };
+
         var header = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("*,Auto,12,Auto"),
@@ -79,7 +114,7 @@ public sealed class CashbookView : UserControl
         Grid.SetColumn(newButton, 1);
         Grid.SetColumn(backButton, 3);
 
-        var controls = ViewHelpers.Panel(new Grid
+        var filterRow = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("220,16,280,16,*,16,100"),
             Children =
@@ -89,9 +124,34 @@ public sealed class CashbookView : UserControl
                 SummaryPanelWithCarryForward(),
                 refreshButton
             }
-        });
-        Grid.SetColumn(controls, 0);
+        };
         Grid.SetColumn(refreshButton, 6);
+
+        var periodRow = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,10,Auto,10,Auto,24,Auto,20,*"),
+            Children =
+            {
+                _previousPeriodButton,
+                nextPeriodButton,
+                currentPeriodButton,
+                _periodLabel
+            }
+        };
+        Grid.SetColumn(nextPeriodButton, 2);
+        Grid.SetColumn(currentPeriodButton, 4);
+        Grid.SetColumn(_periodLabel, 6);
+
+        var controls = ViewHelpers.Panel(new Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,12,Auto"),
+            Children =
+            {
+                filterRow,
+                periodRow
+            }
+        });
+        Grid.SetRow(periodRow, 2);
 
         var ledgerRows = new ScrollViewer { Content = _lines };
         Grid.SetRow(ledgerRows, 2);
@@ -139,27 +199,6 @@ public sealed class CashbookView : UserControl
         return panel;
     }
 
-    private Control SummaryPanel()
-    {
-        var panel = new Grid
-        {
-            ColumnDefinitions = new ColumnDefinitions("Auto,100,16,Auto,100,16,Auto,100,16,Auto,100"),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Children =
-            {
-                SummaryLabel("入金合計", 0),
-                SummaryBox(_receiptTotal, 1),
-                SummaryLabel("出金合計", 3),
-                SummaryBox(_paymentTotal, 4),
-                SummaryLabel("残高", 6),
-                SummaryBox(_endingBalance, 7)
-            }
-        };
-        Grid.SetColumn(panel, 4);
-        return panel;
-    }
-
     private Control SummaryPanelWithCarryForward()
     {
         var panel = new Grid
@@ -169,7 +208,7 @@ public sealed class CashbookView : UserControl
             VerticalAlignment = VerticalAlignment.Bottom,
             Children =
             {
-                SummaryLabel("前月繰越", 0),
+                SummaryLabel("前月残高", 0),
                 SummaryBox(_carryForward, 1),
                 SummaryLabel("入金合計", 3),
                 SummaryBox(_receiptTotal, 4),
@@ -230,7 +269,7 @@ public sealed class CashbookView : UserControl
                     HeaderCell("伝票番号", 1),
                     HeaderCell("相手科目", 2),
                     HeaderCell("摘要", 3),
-                    HeaderCell("証憑", 4),
+                    HeaderCell("参照", 4),
                     HeaderCell("取引先/請求書", 5),
                     HeaderCell("入金", 6),
                     HeaderCell("出金", 7),
@@ -276,6 +315,16 @@ public sealed class CashbookView : UserControl
 
             _subAccounts.Clear();
             _subAccounts.AddRange(await _database.GetSubAccountsAsync(_user.CompanyId));
+
+            var settings = await _database.GetCompanySettingsAsync(_user.CompanyId);
+            _closingDay = settings.ClosingDay;
+            _minimumDate = settings.FiscalYearStart.Date;
+            (_periodStart, _periodEnd) = ClampPeriodToMinimum(
+                GetPeriodRangeContaining(DateTime.Today, _closingDay),
+                _minimumDate,
+                _closingDay);
+            _periodLabel.Text = FormatPeriodLabel();
+            UpdatePeriodNavigationState();
 
             _account.ItemsSource = _accounts;
             var cash = _accounts.FirstOrDefault(x => x.Code == "1010")
@@ -337,18 +386,23 @@ public sealed class CashbookView : UserControl
 
         try
         {
+            (_periodStart, _periodEnd) = ClampPeriodToMinimum((_periodStart, _periodEnd), _minimumDate, _closingDay);
+            _periodLabel.Text = FormatPeriodLabel();
+            UpdatePeriodNavigationState();
+
             var subAccount = _subAccount.SelectedItem as SubAccountFilterOption;
-            var carryForward = await _database.GetCashbookOpeningBalanceAsync(_user.CompanyId, account.AccountId, subAccount?.SubAccountId);
-            var ledgerLines = await _database.GetCashbookLinesAsync(_user.CompanyId, account.AccountId, subAccount?.SubAccountId);
+            var carryForward = await _database.GetCashbookOpeningBalanceAsync(_user.CompanyId, account.AccountId, subAccount?.SubAccountId, _periodStart);
+            var ledgerLines = await _database.GetCashbookLinesAsync(_user.CompanyId, account.AccountId, subAccount?.SubAccountId, _periodStart, _periodEnd);
             _lines.Children.Clear();
             _carryForward.Text = carryForward.ToString("N0");
 
             if (ledgerLines.Count == 0)
             {
-                _message.Text = "該当する入出金はまだありません。";
+                _message.Text = $"{FormatPeriodLabel()} の出納帳はありません。";
                 _receiptTotal.Text = "0";
                 _paymentTotal.Text = "0";
-                _endingBalance.Text = subAccount?.Balance?.ToString("N0") ?? "0";
+                _endingBalance.Text = carryForward.ToString("N0");
+                _message.Foreground = Brush.Parse("#4A5568");
                 return;
             }
 
@@ -360,7 +414,7 @@ public sealed class CashbookView : UserControl
             _receiptTotal.Text = ledgerLines.Sum(x => x.Receipt).ToString("N0");
             _paymentTotal.Text = ledgerLines.Sum(x => x.Payment).ToString("N0");
             _endingBalance.Text = ledgerLines.Last().Balance.ToString("N0");
-            _message.Text = $"{ledgerLines.Count:N0} 行を表示しています。";
+            _message.Text = $"{FormatPeriodLabel()} を {ledgerLines.Count:N0} 行表示しています。";
             _message.Foreground = Brush.Parse("#4A5568");
         }
         catch (Exception ex)
@@ -434,6 +488,59 @@ public sealed class CashbookView : UserControl
         return string.IsNullOrWhiteSpace(partner)
             ? line.InvoiceNumber
             : $"{partner} / {line.InvoiceNumber}";
+    }
+
+    private string FormatPeriodLabel()
+    {
+        return $"{_periodStart:yyyy/MM/dd} - {_periodEnd:yyyy/MM/dd}";
+    }
+
+    private void UpdatePeriodNavigationState()
+    {
+        _previousPeriodButton.IsEnabled = _periodStart > _minimumDate;
+    }
+
+    private static (DateTime PeriodStart, DateTime PeriodEnd) GetPeriodRangeContaining(DateTime referenceDate, int closingDay)
+    {
+        var normalizedClosingDay = Math.Clamp(closingDay, 1, 31);
+        var currentMonthClosing = CreateClosingDate(referenceDate.Year, referenceDate.Month, normalizedClosingDay);
+        if (referenceDate.Date <= currentMonthClosing)
+        {
+            var previousClosing = CreateClosingDate(referenceDate.AddMonths(-1).Year, referenceDate.AddMonths(-1).Month, normalizedClosingDay);
+            return (previousClosing.AddDays(1), currentMonthClosing);
+        }
+
+        var nextClosing = CreateClosingDate(referenceDate.AddMonths(1).Year, referenceDate.AddMonths(1).Month, normalizedClosingDay);
+        return (currentMonthClosing.AddDays(1), nextClosing);
+    }
+
+    private static DateTime CreateClosingDate(int year, int month, int closingDay)
+    {
+        var lastDay = DateTime.DaysInMonth(year, month);
+        return new DateTime(year, month, Math.Min(closingDay, lastDay));
+    }
+
+    private static (DateTime PeriodStart, DateTime PeriodEnd) ClampPeriodToMinimum(
+        (DateTime PeriodStart, DateTime PeriodEnd) period,
+        DateTime minimumDate,
+        int closingDay)
+    {
+        if (minimumDate == default)
+        {
+            return period;
+        }
+
+        if (period.PeriodEnd < minimumDate)
+        {
+            period = GetPeriodRangeContaining(minimumDate, closingDay);
+        }
+
+        if (period.PeriodStart < minimumDate)
+        {
+            return (minimumDate, period.PeriodEnd);
+        }
+
+        return period;
     }
 
     private static Control Cell(string text, int column, FontWeight weight = default)
