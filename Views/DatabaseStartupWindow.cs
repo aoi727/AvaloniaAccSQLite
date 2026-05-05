@@ -9,13 +9,13 @@ namespace AccountingApp.Views;
 
 public sealed class DatabaseStartupWindow : Window
 {
-    private readonly Action<SqliteDatabase> _databaseSelected;
+    private readonly Action<SqliteDatabase, bool> _databaseSelected;
     private readonly TextBlock _message;
     private readonly Button _openButton;
     private readonly Button _newButton;
     private bool _started;
 
-    public DatabaseStartupWindow(Action<SqliteDatabase> databaseSelected)
+    public DatabaseStartupWindow(Action<SqliteDatabase, bool> databaseSelected)
     {
         _databaseSelected = databaseSelected;
         Title = "会計ソフト - DB選択";
@@ -26,7 +26,7 @@ public sealed class DatabaseStartupWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
         _message = ViewHelpers.Body("");
-        _openButton = ViewHelpers.PrimaryButton("既存のDBを開く");
+        _openButton = ViewHelpers.PrimaryButton("DBファイルを選ぶ");
         _newButton = ViewHelpers.SecondaryButton("新しいDBを作成");
 
         _openButton.Click += async (_, _) => await OpenExistingDatabaseAsync();
@@ -51,8 +51,8 @@ public sealed class DatabaseStartupWindow : Window
                     ViewHelpers.Body("前回指定したDBファイルが見つかれば自動で開きます。見つからない場合は、既存のSQLite DBを選ぶか、新しいDBファイルを作成してください。"),
                     _message,
                     new Border { Height = 8 },
-                    _openButton,
-                    _newButton
+                    _newButton,
+                    _openButton
                 }
             })
         };
@@ -69,21 +69,19 @@ public sealed class DatabaseStartupWindow : Window
 
         if (AppSettings.TryGetExistingConfiguredDatabase(out var databasePath))
         {
-            OpenDatabase(databasePath);
+            OpenDatabase(databasePath, openedFromNewDatabase: false);
             return;
         }
 
         var configuredPath = AppSettings.GetConfiguredDatabasePath();
         if (!string.IsNullOrWhiteSpace(configuredPath))
         {
-            SetMessage($"前回のDBファイルが見つかりません: {configuredPath}", true);
+            SetMessage($"前回のDBファイルが見つかりません: {configuredPath}{Environment.NewLine}新規作成するか、既存のDBファイルを選んでください。", true);
         }
         else
         {
-            SetMessage("DBファイルがまだ設定されていません。", false);
+            SetMessage("DBファイルがまだ設定されていません。新規作成するか、既存のDBファイルを選んでください。", false);
         }
-
-        await OpenExistingDatabaseAsync();
     }
 
     private async Task OpenExistingDatabaseAsync()
@@ -107,7 +105,7 @@ public sealed class DatabaseStartupWindow : Window
         var path = file?.Path.LocalPath;
         if (string.IsNullOrWhiteSpace(path))
         {
-            SetMessage("既存DBを開くか、新しいDBを作成してください。", false);
+            SetMessage("DBファイルの選択をキャンセルしました。新規作成するか、既存のDBファイルを選んでください。", false);
             return;
         }
 
@@ -118,7 +116,7 @@ public sealed class DatabaseStartupWindow : Window
         }
 
         AppSettings.SaveDatabasePath(path);
-        OpenDatabase(path);
+        OpenDatabase(path, openedFromNewDatabase: false);
     }
 
     private async Task CreateNewDatabaseAsync()
@@ -151,7 +149,7 @@ public sealed class DatabaseStartupWindow : Window
             var database = new SqliteDatabase(AppSettings.BuildSqliteConnectionString(path));
             await database.InitializeSchemaAsync();
             AppSettings.SaveDatabasePath(path);
-            OpenDatabase(path);
+            OpenDatabase(path, openedFromNewDatabase: true);
         }
         catch (Exception ex)
         {
@@ -159,10 +157,10 @@ public sealed class DatabaseStartupWindow : Window
         }
     }
 
-    private void OpenDatabase(string databasePath)
+    private void OpenDatabase(string databasePath, bool openedFromNewDatabase)
     {
         var database = new SqliteDatabase(AppSettings.BuildSqliteConnectionString(databasePath));
-        _databaseSelected(database);
+        _databaseSelected(database, openedFromNewDatabase);
         Close();
     }
 

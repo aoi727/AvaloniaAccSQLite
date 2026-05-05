@@ -22,10 +22,19 @@ public static class GeneralLedgerPdfExporter
         string accountLabel,
         string subAccountLabel,
         string periodLabel,
+        string balanceSide,
         decimal carryForward,
         IReadOnlyList<GeneralLedgerLine> lines)
     {
-        return Task.Run(() => ExportCore(outputPath, companyName, accountLabel, subAccountLabel, periodLabel, carryForward, lines));
+        return Task.Run(() => ExportCore(
+            outputPath,
+            companyName,
+            accountLabel,
+            subAccountLabel,
+            periodLabel,
+            balanceSide,
+            carryForward,
+            lines));
     }
 
     private static void ExportCore(
@@ -34,6 +43,7 @@ public static class GeneralLedgerPdfExporter
         string accountLabel,
         string subAccountLabel,
         string periodLabel,
+        string balanceSide,
         decimal carryForward,
         IReadOnlyList<GeneralLedgerLine> lines)
     {
@@ -49,10 +59,27 @@ public static class GeneralLedgerPdfExporter
         var contentBottom = PageHeight - Margin;
         var rowsPerPage = Math.Max(1, (int)Math.Floor((contentBottom - contentTop) / RowHeight));
 
+        var openingOnDebit = UsesDebitForCarryForward(balanceSide);
+        var openingAmount = Math.Abs(carryForward);
+        var endingBalance = lines.LastOrDefault()?.Balance ?? carryForward;
+        var closingAmount = Math.Abs(endingBalance);
+        var debitTotal = lines.Sum(x => x.Debit);
+        var creditTotal = lines.Sum(x => x.Credit);
+
         var allRows = new List<LedgerPdfRow>
         {
-            new("繰越残高", string.Empty, string.Empty, string.Empty, string.Empty, null, null, carryForward, true)
+            new(
+                "前月繰越",
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                openingOnDebit ? openingAmount : null,
+                openingOnDebit ? null : openingAmount,
+                carryForward,
+                true)
         };
+
         allRows.AddRange(lines.Select(line => new LedgerPdfRow(
             line.EntryDate.ToString("MM/dd"),
             line.EntryNumber,
@@ -63,6 +90,28 @@ public static class GeneralLedgerPdfExporter
             line.Credit == 0 ? null : line.Credit,
             line.Balance,
             false)));
+
+        allRows.Add(new LedgerPdfRow(
+            "次月繰越",
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            openingOnDebit ? null : closingAmount,
+            openingOnDebit ? closingAmount : null,
+            null,
+            true));
+
+        allRows.Add(new LedgerPdfRow(
+            "合計",
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            debitTotal + (openingOnDebit ? openingAmount : 0m) + (openingOnDebit ? 0m : closingAmount),
+            creditTotal + (openingOnDebit ? closingAmount : 0m) + (openingOnDebit ? 0m : openingAmount),
+            null,
+            true));
 
         var pageCount = Math.Max(1, (int)Math.Ceiling(allRows.Count / (double)rowsPerPage));
         for (var pageIndex = 0; pageIndex < pageCount; pageIndex++)
@@ -75,11 +124,6 @@ public static class GeneralLedgerPdfExporter
 
             var pageRows = allRows.Skip(pageIndex * rowsPerPage).Take(rowsPerPage).ToList();
             DrawRows(canvas, typeface, columns, totalWidth, contentTop, pageRows);
-
-            if (pageIndex == pageCount - 1)
-            {
-                DrawTotals(canvas, typeface, columns, totalWidth, contentTop + pageRows.Count * RowHeight, lines);
-            }
 
             document.EndPage();
         }
@@ -127,7 +171,7 @@ public static class GeneralLedgerPdfExporter
             canvas.DrawLine(runningX, top, runningX, bottom, borderPaint);
         }
 
-        var labels = new[] { "日付", "仕訳番号", "相手科目", "摘要", "取引先/請求書", "借方", "貸方", "残高" };
+        var labels = new[] { "日付", "仕訳番号", "相手勘定科目", "摘要", "取引先/請求書", "借方", "貸方", "残高" };
         runningX = Margin;
         for (var i = 0; i < columns.Count; i++)
         {
@@ -176,31 +220,11 @@ public static class GeneralLedgerPdfExporter
                 DrawCell(canvas, row.Credit.Value.ToString("N0"), Margin + columns.Take(7).Sum() - 6f, rowBottom - 6f, SKTextAlign.Right, font, textPaint);
             }
 
-            DrawCell(canvas, row.Balance.ToString("N0"), Margin + totalWidth - 6f, rowBottom - 6f, SKTextAlign.Right, font, textPaint);
+            if (row.Balance.HasValue)
+            {
+                DrawCell(canvas, row.Balance.Value.ToString("N0"), Margin + totalWidth - 6f, rowBottom - 6f, SKTextAlign.Right, font, textPaint);
+            }
         }
-    }
-
-    private static void DrawTotals(SKCanvas canvas, SKTypeface typeface, IReadOnlyList<float> columns, float totalWidth, float top, IReadOnlyList<GeneralLedgerLine> lines)
-    {
-        using var borderPaint = new SKPaint { Color = SKColors.Black, Style = SKPaintStyle.Stroke, StrokeWidth = LineWidth, IsAntialias = false };
-        using var textPaint = new SKPaint { Color = SKColors.Black, IsAntialias = true };
-        using var bodyFont = new SKFont(typeface, BodyFontSize) { Embolden = true };
-
-        var bottom = top + RowHeight;
-        canvas.DrawRect(new SKRect(Margin, top, Margin + totalWidth, bottom), borderPaint);
-
-        float runningX = Margin;
-        foreach (var width in columns.Take(columns.Count - 1))
-        {
-            runningX += width;
-            canvas.DrawLine(runningX, top, runningX, bottom, borderPaint);
-        }
-
-        DrawCell(canvas, "合計", Margin + 6f, bottom - 6f, SKTextAlign.Left, bodyFont, textPaint);
-        DrawCell(canvas, lines.Sum(x => x.Debit).ToString("N0"), Margin + columns.Take(6).Sum() - 6f, bottom - 6f, SKTextAlign.Right, bodyFont, textPaint);
-        DrawCell(canvas, lines.Sum(x => x.Credit).ToString("N0"), Margin + columns.Take(7).Sum() - 6f, bottom - 6f, SKTextAlign.Right, bodyFont, textPaint);
-        var endingBalance = lines.LastOrDefault()?.Balance ?? 0m;
-        DrawCell(canvas, endingBalance.ToString("N0"), Margin + totalWidth - 6f, bottom - 6f, SKTextAlign.Right, bodyFont, textPaint);
     }
 
     private static void DrawCell(SKCanvas canvas, string text, float x, float y, SKTextAlign align, SKFont font, SKPaint paint)
@@ -238,6 +262,11 @@ public static class GeneralLedgerPdfExporter
         return string.IsNullOrWhiteSpace(partner) ? line.InvoiceNumber : $"{partner}/{line.InvoiceNumber}";
     }
 
+    private static bool UsesDebitForCarryForward(string balanceSide)
+    {
+        return string.Equals(balanceSide, "debit", StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed record LedgerPdfRow(
         string DateText,
         string EntryNumber,
@@ -246,6 +275,6 @@ public static class GeneralLedgerPdfExporter
         string Partner,
         decimal? Debit,
         decimal? Credit,
-        decimal Balance,
+        decimal? Balance,
         bool IsCarryForward);
 }

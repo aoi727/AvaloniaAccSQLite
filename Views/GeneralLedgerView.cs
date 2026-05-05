@@ -538,6 +538,7 @@ public sealed class GeneralLedgerView : UserControl
                 $"{account.Code} {account.Name}",
                 subAccountLabel,
                 FormatPeriodLabel(),
+                account.BalanceSide,
                 _currentCarryForward,
                 _currentLedgerLines);
             var previewError = PdfPreviewLauncher.Open(file.Path.LocalPath);

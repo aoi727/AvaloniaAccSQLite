@@ -7,13 +7,15 @@ namespace AccountingApp.Views;
 public sealed class MainWindow : Window
 {
     private readonly SqliteDatabase _database;
+    private readonly bool _openedFromNewDatabase;
     private AppUser? _currentUser;
     private DateTime? _journalBookTargetMonth;
     private (int AccountId, int? SubAccountId, DateTime PeriodStart)? _generalLedgerSelection;
 
-    public MainWindow(SqliteDatabase database)
+    public MainWindow(SqliteDatabase database, bool openedFromNewDatabase)
     {
         _database = database;
+        _openedFromNewDatabase = openedFromNewDatabase;
         Title = "会計ソフト";
         Width = 1500;
         Height = 820;
@@ -26,7 +28,7 @@ public sealed class MainWindow : Window
     private void ShowLogin()
     {
         _currentUser = null;
-        SetContent(new LoginView(_database, ShowDashboard));
+        SetContent(new LoginView(_database, ShowDashboard, _openedFromNewDatabase));
     }
 
     private void ShowDashboard(AppUser user)

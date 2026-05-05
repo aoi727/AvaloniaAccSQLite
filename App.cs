@@ -25,9 +25,9 @@ public sealed class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            var startupWindow = new DatabaseStartupWindow(database =>
+            var startupWindow = new DatabaseStartupWindow((database, openedFromNewDatabase) =>
             {
-                var mainWindow = new MainWindow(database);
+                var mainWindow = new MainWindow(database, openedFromNewDatabase);
                 desktop.MainWindow = mainWindow;
                 mainWindow.Show();
             });

@@ -9,8 +9,11 @@ namespace AccountingApp.Views;
 
 public sealed class LoginView : UserControl
 {
+    private const double CompactSetupButtonWidth = 180;
+
     private readonly SqliteDatabase _database;
     private readonly Action<AppUser> _signedIn;
+    private readonly bool _openedFromNewDatabase;
     private TextBox _loginId = null!;
     private TextBox _password = null!;
     private TextBlock _message = null!;
@@ -18,10 +21,11 @@ public sealed class LoginView : UserControl
     private Button _initSchemaButton = null!;
     private Button _createAdminButton = null!;
 
-    public LoginView(SqliteDatabase database, Action<AppUser> signedIn)
+    public LoginView(SqliteDatabase database, Action<AppUser> signedIn, bool openedFromNewDatabase)
     {
         _database = database;
         _signedIn = signedIn;
+        _openedFromNewDatabase = openedFromNewDatabase;
         Content = Build();
         _ = CheckDatabaseAsync();
     }
@@ -34,6 +38,8 @@ public sealed class LoginView : UserControl
         _signInButton = ViewHelpers.PrimaryButton("ログイン");
         _initSchemaButton = ViewHelpers.SecondaryButton("DBスキーマを初期化");
         _createAdminButton = ViewHelpers.SecondaryButton("初期管理者を作成");
+        ApplySetupButtonSize(_createAdminButton);
+        ApplySetupButtonSize(_initSchemaButton);
 
         _signInButton.Click += async (_, _) => await SignInAsync();
         _initSchemaButton.Click += async (_, _) => await InitializeSchemaAsync();
@@ -46,7 +52,7 @@ public sealed class LoginView : UserControl
             Children =
             {
                 ViewHelpers.Heading("ログイン"),
-                ViewHelpers.Body("会社を選ぶ前に、ユーザー認証で作業を始めます。"),
+                ViewHelpers.Body("会社を選ぶ代わりに、ユーザー認証でログインします。"),
                 ViewHelpers.Label("ログインID"),
                 _loginId,
                 ViewHelpers.Label("パスワード"),
@@ -82,7 +88,7 @@ public sealed class LoginView : UserControl
         SetMessage("SQLite 接続を確認しています。", false);
         if (!await _database.CanConnectAsync())
         {
-            SetMessage("DBに接続できません。接続文字列を確認してください。必要ならスキーマ初期化の前にDBを作成してください。", true);
+            SetMessage("DBに接続できません。保存先や権限を確認してください。必要なら起動時の画面に戻って別のDBを選び直してください。", true);
             return;
         }
 
@@ -130,6 +136,17 @@ public sealed class LoginView : UserControl
     private void ShowCreateAdmin()
     {
         Content = new CreateAdminView(_database, _signedIn, () => Content = Build());
+    }
+
+    private void ApplySetupButtonSize(Button button)
+    {
+        if (_openedFromNewDatabase)
+        {
+            return;
+        }
+
+        button.Width = CompactSetupButtonWidth;
+        button.HorizontalAlignment = HorizontalAlignment.Left;
     }
 
     private async Task RunBusyAsync(Button button, Func<Task> action)
