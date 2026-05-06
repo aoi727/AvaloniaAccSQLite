@@ -29,6 +29,8 @@ public sealed class JournalEntryFormView : UserControl
     private readonly AppUser _user;
     private readonly Action _backToDashboard;
     private readonly string? _editingEntryNumber;
+    private readonly ComboBox _templateSelector = new() { MinWidth = 240 };
+    private readonly TextBox _templateName = new() { PlaceholderText = "定型仕訳名" };
     private readonly DatePicker _entryDate = new() { SelectedDate = new DateTimeOffset(DateTime.Today) };
     private readonly TextBox _entryNumber = new() { PlaceholderText = "自動採番できます" };
     private readonly TextBox _reference = new() { PlaceholderText = "証憑番号、請求書番号など" };
@@ -40,12 +42,16 @@ public sealed class JournalEntryFormView : UserControl
     private readonly TextBlock _balanceMessage = ViewHelpers.Body("");
     private readonly TextBlock _message = ViewHelpers.Body("振替伝票を入力してください。");
     private readonly Button _saveButton = ViewHelpers.PrimaryButton("登録");
+    private readonly Button _applyTemplateButton = ViewHelpers.SecondaryButton("読込");
+    private readonly Button _saveTemplateButton = ViewHelpers.SecondaryButton("保存");
+    private readonly Button _deleteTemplateButton = ViewHelpers.SecondaryButton("削除");
     private readonly Button _deleteButton = CreateDeleteButton();
     private readonly List<Account> _accounts = [];
     private readonly List<Account> _selectableAccounts = [];
     private readonly List<SubAccount> _subAccounts = [];
     private readonly List<TaxCode> _taxCodes = [];
     private readonly List<BusinessPartner> _partners = [];
+    private readonly List<JournalTemplateSummary> _templates = [];
     private readonly List<VoucherRowControls> _rows = [];
     private Grid? _voucherGrid;
     private bool _isTaxExempt;
@@ -63,6 +69,10 @@ public sealed class JournalEntryFormView : UserControl
         Content = Build();
         _entryDate.SelectedDateChanged += async (_, _) => await EntryDateChangedAsync();
         _saveButton.Click += async (_, _) => await SaveAsync();
+        _applyTemplateButton.Click += async (_, _) => await ApplySelectedTemplateAsync();
+        _saveTemplateButton.Click += async (_, _) => await SaveTemplateAsync();
+        _deleteTemplateButton.Click += async (_, _) => await DeleteSelectedTemplateAsync();
+        _templateSelector.SelectionChanged += (_, _) => SyncTemplateNameFromSelection();
         _singleEntryMode.IsCheckedChanged += (_, _) => ApplySingleEntryModeUi();
         _ = LoadAsync();
     }
@@ -74,6 +84,9 @@ public sealed class JournalEntryFormView : UserControl
         backButton.Click += (_, _) => _backToDashboard();
 
         _saveButton.Width = 120;
+        _applyTemplateButton.Width = 90;
+        _saveTemplateButton.Width = 90;
+        _deleteTemplateButton.Width = 90;
         _deleteButton.Width = 120;
         _deleteButton.IsVisible = _editingEntryNumber is not null;
         _deleteButton.Click += async (_, _) => await ConfirmAndDeleteAsync();
@@ -155,6 +168,28 @@ public sealed class JournalEntryFormView : UserControl
             }
         });
 
+        var templatePanel = ViewHelpers.Panel(new StackPanel
+        {
+            Spacing = 10,
+            Children =
+            {
+                ViewHelpers.Heading("定型仕訳", 18),
+                ViewHelpers.Body("よく使う入力内容を保存して、次回は読込から再利用できます。"),
+                new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions("240,12,180,12,90,12,90,12,90"),
+                    Children =
+                    {
+                        Field("登録済み", _templateSelector, 0),
+                        Field("保存名", _templateName, 2),
+                        TemplateButtonField(_applyTemplateButton, 4),
+                        TemplateButtonField(_saveTemplateButton, 6),
+                        TemplateButtonField(_deleteTemplateButton, 8)
+                    }
+                }
+            }
+        });
+
         var table = BuildVoucherTable();
 
         var topArea = new StackPanel
@@ -170,7 +205,8 @@ public sealed class JournalEntryFormView : UserControl
                     Children =
                     {
                         meta,
-                        singleModePanel
+                        singleModePanel,
+                        templatePanel
                     }
                 })
             }
@@ -202,6 +238,22 @@ public sealed class JournalEntryFormView : UserControl
         {
             Spacing = 4,
             Children = { ViewHelpers.Label(label), input }
+        };
+        Grid.SetColumn(panel, column);
+        return panel;
+    }
+
+    private static Control TemplateButtonField(Control button, int column)
+    {
+        var panel = new StackPanel
+        {
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Children =
+            {
+                new Border { Height = 28 },
+                button
+            }
         };
         Grid.SetColumn(panel, column);
         return panel;
@@ -489,6 +541,8 @@ public sealed class JournalEntryFormView : UserControl
                 row.SetSources(_selectableAccounts, _taxCodes, _partners, _taxInputOptions, GetDefaultTaxInputTypeIndex());
             }
 
+            await LoadTemplatesAsync();
+
             ApplyTaxModeUi();
 
             if (_selectableAccounts.Count == 0)
@@ -541,6 +595,282 @@ public sealed class JournalEntryFormView : UserControl
 
         var date = _entryDate.SelectedDate?.DateTime.Date ?? DateTime.Today;
         _entryNumber.Text = await _database.GetNextEntryNumberAsync(_user.CompanyId, date);
+    }
+
+    private async Task LoadTemplatesAsync()
+    {
+        var selectedTemplateId = (_templateSelector.SelectedItem as JournalTemplateSummary)?.TemplateId;
+        _templates.Clear();
+        _templates.AddRange(await _database.GetJournalTemplateSummariesAsync(_user.CompanyId));
+        _templateSelector.ItemsSource = null;
+        _templateSelector.ItemsSource = _templates;
+        _templateSelector.SelectedItem = selectedTemplateId.HasValue
+            ? _templates.FirstOrDefault(x => x.TemplateId == selectedTemplateId.Value)
+            : null;
+    }
+
+    private void SyncTemplateNameFromSelection()
+    {
+        if (_templateSelector.SelectedItem is JournalTemplateSummary template)
+        {
+            _templateName.Text = template.Name;
+        }
+    }
+
+    private async Task ApplySelectedTemplateAsync()
+    {
+        if (_templateSelector.SelectedItem is not JournalTemplateSummary templateSummary)
+        {
+            SetMessage("読み込む定型仕訳を選択してください。", true);
+            return;
+        }
+
+        var template = await _database.GetJournalTemplateAsync(_user.CompanyId, templateSummary.TemplateId);
+        if (template is null)
+        {
+            SetMessage("選択した定型仕訳が見つかりません。", true);
+            await LoadTemplatesAsync();
+            return;
+        }
+
+        ClearVoucherRows();
+        _reference.Text = template.Reference ?? "";
+        _templateName.Text = template.Name;
+
+        if (_editingEntryNumber is null)
+        {
+            _singleEntryMode.IsChecked = template.IsSingleEntryMode;
+        }
+
+        foreach (var templateRow in template.Rows.Where(x => x.RowNo >= 1 && x.RowNo <= _rows.Count))
+        {
+            ApplyTemplateRow(_rows[templateRow.RowNo - 1], templateRow);
+        }
+
+        ApplySingleEntryModeUi();
+        UpdateTotals();
+        RefreshInvoiceInfo();
+        SetMessage($"定型仕訳を読み込みました: {template.Name}", false);
+    }
+
+    private async Task SaveTemplateAsync()
+    {
+        var templateName = _templateName.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(templateName))
+        {
+            SetMessage("定型仕訳名を入力してください。", true);
+            return;
+        }
+
+        var rows = BuildTemplateRowsFromForm();
+        if (rows.Count == 0)
+        {
+            SetMessage("保存する明細がありません。", true);
+            return;
+        }
+
+        await _database.SaveJournalTemplateAsync(
+            _user.CompanyId,
+            _user.UserId,
+            templateName,
+            _reference.Text,
+            _singleEntryMode.IsChecked == true,
+            rows);
+
+        await LoadTemplatesAsync();
+        _templateSelector.SelectedItem = _templates.FirstOrDefault(x => string.Equals(x.Name, templateName, StringComparison.Ordinal));
+        SetMessage($"定型仕訳を保存しました: {templateName}", false);
+    }
+
+    private async Task DeleteSelectedTemplateAsync()
+    {
+        if (_templateSelector.SelectedItem is not JournalTemplateSummary template)
+        {
+            SetMessage("削除する定型仕訳を選択してください。", true);
+            return;
+        }
+
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            SetMessage("定型仕訳の削除確認を表示できませんでした。", true);
+            return;
+        }
+
+        var executeButton = ViewHelpers.PrimaryButton("削除する");
+        executeButton.Width = 120;
+        executeButton.Background = Brush.Parse("#B42318");
+        var cancelButton = ViewHelpers.SecondaryButton("キャンセル");
+        cancelButton.Width = 120;
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 12,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Children = { executeButton, cancelButton }
+        };
+
+        var dialog = new Window
+        {
+            Title = "定型仕訳削除確認",
+            Width = 460,
+            Height = 200,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = ViewHelpers.Panel(new StackPanel
+            {
+                Margin = new Thickness(20),
+                Spacing = 16,
+                Children =
+                {
+                    ViewHelpers.Heading("この定型仕訳を削除しますか", 20),
+                    ViewHelpers.Body(template.Name),
+                    buttons
+                }
+            })
+        };
+
+        executeButton.Click += (_, _) => dialog.Close(true);
+        cancelButton.Click += (_, _) => dialog.Close(false);
+
+        if (!await dialog.ShowDialog<bool>(owner))
+        {
+            return;
+        }
+
+        await _database.DeleteJournalTemplateAsync(_user.CompanyId, _user.UserId, template.TemplateId);
+        _templateSelector.SelectedItem = null;
+        _templateName.Text = "";
+        await LoadTemplatesAsync();
+        SetMessage($"定型仕訳を削除しました: {template.Name}", false);
+    }
+
+    private List<JournalTemplateRowData> BuildTemplateRowsFromForm()
+    {
+        var rows = new List<JournalTemplateRowData>();
+        foreach (var row in _rows)
+        {
+            var data = new JournalTemplateRowData(
+                row.RowNumber,
+                NormalizeTemplateText(row.Description.Text),
+                (row.Partner.SelectedItem as BusinessPartner)?.PartnerId,
+                NormalizeTemplateText(row.InvoiceNumber.Text),
+                (row.DebitAccount.SelectedItem as Account)?.AccountId,
+                (row.DebitSubAccount.SelectedItem as SubAccount)?.SubAccountId,
+                _isTaxExempt ? null : (row.DebitTaxCode.SelectedItem as TaxCode)?.TaxCodeId,
+                _isTaxExempt ? "none" : GetTaxInputTypeValue(row.DebitTaxInputType.SelectedIndex, _taxInputOptions),
+                ReadTemplateAmount(row.DebitAmount.Text),
+                (row.CreditAccount.SelectedItem as Account)?.AccountId,
+                (row.CreditSubAccount.SelectedItem as SubAccount)?.SubAccountId,
+                _isTaxExempt ? null : (row.CreditTaxCode.SelectedItem as TaxCode)?.TaxCodeId,
+                _isTaxExempt ? "none" : GetTaxInputTypeValue(row.CreditTaxInputType.SelectedIndex, _taxInputOptions),
+                ReadTemplateAmount(row.CreditAmount.Text));
+
+            if (IsTemplateRowEmpty(data))
+            {
+                continue;
+            }
+
+            rows.Add(data);
+        }
+
+        return rows;
+    }
+
+    private void ApplyTemplateRow(VoucherRowControls row, JournalTemplateRowData templateRow)
+    {
+        row.Description.Text = templateRow.Description ?? "";
+        row.Partner.SelectedItem = FindPartner(templateRow.PartnerId);
+        row.InvoiceNumber.Text = templateRow.InvoiceNumber ?? "";
+
+        ApplyTemplateSide(
+            row.DebitCode,
+            row.DebitAccount,
+            row.DebitSubAccount,
+            row.DebitTaxCode,
+            row.DebitTaxInputType,
+            row.DebitAmount,
+            templateRow.DebitAccountId,
+            templateRow.DebitSubAccountId,
+            templateRow.DebitTaxCodeId,
+            templateRow.DebitTaxInputType,
+            templateRow.DebitAmount);
+
+        ApplyTemplateSide(
+            row.CreditCode,
+            row.CreditAccount,
+            row.CreditSubAccount,
+            row.CreditTaxCode,
+            row.CreditTaxInputType,
+            row.CreditAmount,
+            templateRow.CreditAccountId,
+            templateRow.CreditSubAccountId,
+            templateRow.CreditTaxCodeId,
+            templateRow.CreditTaxInputType,
+            templateRow.CreditAmount);
+
+        UpdateInvoiceInfo(row);
+    }
+
+    private void ApplyTemplateSide(
+        TextBox codeBox,
+        ComboBox accountCombo,
+        ComboBox subAccountCombo,
+        ComboBox taxCodeCombo,
+        ComboBox taxInputTypeCombo,
+        TextBox amountBox,
+        int? accountId,
+        int? subAccountId,
+        int? taxCodeId,
+        string taxInputType,
+        decimal? amount)
+    {
+        var account = FindAccount(accountId);
+        accountCombo.SelectedItem = account;
+        codeBox.Text = account?.Code ?? "";
+        UpdateSubAccountChoices(subAccountCombo, account);
+        subAccountCombo.SelectedItem = FindSubAccount(subAccountId);
+        taxCodeCombo.SelectedItem = FindTaxCode(taxCodeId);
+        taxInputTypeCombo.SelectedIndex = GetTaxInputTypeIndex(taxInputType, _taxInputOptions);
+        amountBox.Text = amount.HasValue ? amount.Value.ToString("0.##") : "";
+    }
+
+    private Account? FindAccount(int? accountId)
+    {
+        return accountId.HasValue
+            ? _accounts.FirstOrDefault(x => x.AccountId == accountId.Value)
+            : null;
+    }
+
+    private TaxCode? FindTaxCode(int? taxCodeId)
+    {
+        return taxCodeId.HasValue
+            ? _taxCodes.FirstOrDefault(x => x.TaxCodeId == taxCodeId.Value)
+            : null;
+    }
+
+    private static decimal? ReadTemplateAmount(string? text)
+    {
+        return decimal.TryParse(text, NumberStyles.Number, CultureInfo.CurrentCulture, out var value) && value > 0
+            ? value
+            : null;
+    }
+
+    private static string? NormalizeTemplateText(string? text)
+    {
+        var trimmed = text?.Trim();
+        return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+    }
+
+    private static bool IsTemplateRowEmpty(JournalTemplateRowData row)
+    {
+        return row.DebitAccountId is null
+            && row.CreditAccountId is null
+            && !row.DebitAmount.HasValue
+            && !row.CreditAmount.HasValue
+            && string.IsNullOrWhiteSpace(row.Description)
+            && row.PartnerId is null
+            && string.IsNullOrWhiteSpace(row.InvoiceNumber);
     }
 
     private async Task EntryDateChangedAsync()
@@ -934,7 +1264,13 @@ public sealed class JournalEntryFormView : UserControl
     {
         _reference.Text = "";
         _entryNumber.Text = await _database.GetNextEntryNumberAsync(_user.CompanyId, entryDate);
+        ClearVoucherRows();
+        SyncSingleModeRows();
+        UpdateTotals();
+    }
 
+    private void ClearVoucherRows()
+    {
         foreach (var row in _rows)
         {
             ClearCodeWarning(row.DebitCode);
@@ -963,9 +1299,6 @@ public sealed class JournalEntryFormView : UserControl
             row.InvoiceNumber.Text = "";
             UpdateInvoiceInfo(row);
         }
-
-        SyncSingleModeRows();
-        UpdateTotals();
     }
 
     private async Task AccountSelectionChangedAsync(TextBox codeBox, ComboBox accountCombo, ComboBox subAccountCombo, ComboBox taxCodeCombo)

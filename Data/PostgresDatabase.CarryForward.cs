@@ -54,6 +54,7 @@ public sealed partial class SqliteDatabase
             var nextFiscalYearStart = GetFiscalYearStartForDate(settings.FiscalYearStart, today.Date);
             var sourceFiscalYearStart = ShiftFiscalYearStart(settings.FiscalYearStart, nextFiscalYearStart, -1);
             var sourceFiscalYearEnd = nextFiscalYearStart.AddDays(-1);
+            await EnsureJournalDateOpenAsync(connection, transaction, companyId, nextFiscalYearStart);
 
             var existing = await GetAnnualCarryForwardExecutionAsync(connection, transaction, companyId, nextFiscalYearStart);
             if (existing is not null)

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using AccountingApp.Data;
 using AccountingApp.Models;
@@ -32,9 +33,17 @@ public sealed class JournalBookView : UserControl
     private readonly Button _importCsvButton = ViewHelpers.SecondaryButton("CSV取込");
     private readonly Button _exportCsvButton = ViewHelpers.SecondaryButton("CSV出力");
     private readonly Button _exportPdfButton = ViewHelpers.SecondaryButton("PDF出力");
+    private readonly TextBox _entryNumberFilter = new() { PlaceholderText = "仕訳番号" };
+    private readonly TextBox _keywordFilter = new() { PlaceholderText = "摘要・証憑番号・科目名" };
+    private readonly TextBox _debitAccountFilter = new() { PlaceholderText = "借方科目" };
+    private readonly TextBox _creditAccountFilter = new() { PlaceholderText = "貸方科目" };
+    private readonly TextBox _minAmountFilter = new() { PlaceholderText = "下限金額" };
+    private readonly TextBox _maxAmountFilter = new() { PlaceholderText = "上限金額" };
     private DateTime _targetMonth;
     private DateTime? _minimumMonth;
+    private IReadOnlyList<JournalBookRow> _monthRows = Array.Empty<JournalBookRow>();
     private IReadOnlyList<JournalBookRow> _currentRows = Array.Empty<JournalBookRow>();
+    private HashSet<string> _currentEntryNumbers = [];
 
     public JournalBookView(SqliteDatabase database, AppUser user, Action backToDashboard, Action<string?, DateTime> openJournalForm, DateTime initialTargetMonth)
     {
@@ -100,6 +109,23 @@ public sealed class JournalBookView : UserControl
             await LoadAsync();
         };
 
+        var searchButton = ViewHelpers.SecondaryButton("検索");
+        searchButton.Width = 100;
+        searchButton.Click += (_, _) => ApplyFilters();
+
+        var clearButton = ViewHelpers.SecondaryButton("条件クリア");
+        clearButton.Width = 110;
+        clearButton.Click += (_, _) =>
+        {
+            _entryNumberFilter.Text = "";
+            _keywordFilter.Text = "";
+            _debitAccountFilter.Text = "";
+            _creditAccountFilter.Text = "";
+            _minAmountFilter.Text = "";
+            _maxAmountFilter.Text = "";
+            ApplyFilters();
+        };
+
         var header = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("*,Auto,12,Auto,12,Auto,12,Auto,12,Auto"),
@@ -126,7 +152,7 @@ public sealed class JournalBookView : UserControl
         Grid.SetColumn(newButton, 7);
         Grid.SetColumn(backButton, 9);
 
-        var controls = ViewHelpers.Panel(new Grid
+        var monthControls = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("Auto,10,Auto,10,Auto,24,Auto,20,*,20,Auto,100,16,Auto,100"),
             Children =
@@ -141,11 +167,39 @@ public sealed class JournalBookView : UserControl
                 SummaryLabel("貸方合計", 13),
                 SummaryBox(_creditTotal, 14)
             }
-        });
+        };
         Grid.SetColumn(nextButton, 2);
         Grid.SetColumn(currentButton, 4);
         Grid.SetColumn(_monthLabel, 6);
         Grid.SetColumn(_message, 8);
+
+        var searchControls = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("170,12,240,12,180,12,180,12,110,12,110,12,100,12,110"),
+            RowDefinitions = new RowDefinitions("Auto,Auto"),
+            RowSpacing = 8,
+            Children =
+            {
+                SearchField("仕訳番号", _entryNumberFilter, 0, 0),
+                SearchField("キーワード", _keywordFilter, 2, 0),
+                SearchField("借方科目", _debitAccountFilter, 4, 0),
+                SearchField("貸方科目", _creditAccountFilter, 6, 0),
+                SearchField("下限金額", _minAmountFilter, 8, 0),
+                SearchField("上限金額", _maxAmountFilter, 10, 0),
+                ButtonField(searchButton, 12, 0),
+                ButtonField(clearButton, 14, 0)
+            }
+        };
+
+        var controls = ViewHelpers.Panel(new StackPanel
+        {
+            Spacing = 12,
+            Children =
+            {
+                monthControls,
+                searchControls
+            }
+        });
 
         var listScroll = new ScrollViewer { Content = _rows };
         Grid.SetRow(listScroll, 1);
@@ -192,42 +246,252 @@ public sealed class JournalBookView : UserControl
             _monthLabel.Text = $"{_targetMonth:yyyy年M月}";
             var from = _targetMonth;
             var to = _targetMonth.AddMonths(1);
-            var rows = await _database.GetJournalBookRowsAsync(_user.CompanyId, from, to);
-            _currentRows = rows;
+            _monthRows = await _database.GetJournalBookRowsAsync(_user.CompanyId, from, to);
+            ApplyFilters();
+        }
+        catch (Exception ex)
+        {
+            _monthRows = Array.Empty<JournalBookRow>();
+            _currentRows = Array.Empty<JournalBookRow>();
+            _currentEntryNumbers = [];
             _rows.Children.Clear();
+            _message.Text = ex.Message;
+            _message.Foreground = Brush.Parse("#B42318");
+        }
+    }
 
-            if (rows.Count == 0)
+    private void ApplyFilters()
+    {
+        try
+        {
+            var minAmount = ParseAmount(_minAmountFilter.Text, "下限金額");
+            var maxAmount = ParseAmount(_maxAmountFilter.Text, "上限金額");
+            if (minAmount.HasValue && maxAmount.HasValue && minAmount.Value > maxAmount.Value)
             {
-                _message.Text = "この月の仕訳はありません。";
-                _message.Foreground = Brush.Parse("#4A5568");
-                _debitTotal.Text = "0";
-                _creditTotal.Text = "0";
-                return;
+                throw new InvalidOperationException("下限金額は上限金額以下で入力してください。");
             }
 
-            string? previousEntryNumber = null;
-            string? previousDescription = null;
-            foreach (var row in rows)
-            {
-                var isVoucherStart = !string.Equals(previousEntryNumber, row.EntryNumber, StringComparison.Ordinal);
-                var descriptionText = ResolveDescriptionText(row.Description, isVoucherStart, previousDescription);
-                _rows.Children.Add(JournalRow(row, isVoucherStart, descriptionText));
-                previousEntryNumber = row.EntryNumber;
-                previousDescription = row.Description;
-            }
+            var entryNumberFilter = Normalize(_entryNumberFilter.Text);
+            var keywordFilter = Normalize(_keywordFilter.Text);
+            var debitAccountFilter = Normalize(_debitAccountFilter.Text);
+            var creditAccountFilter = Normalize(_creditAccountFilter.Text);
 
-            _debitTotal.Text = rows.Sum(x => x.DebitAmount).ToString("N0");
-            _creditTotal.Text = rows.Sum(x => x.CreditAmount).ToString("N0");
-            var voucherCount = rows.Select(x => x.EntryNumber).Distinct(StringComparer.Ordinal).Count();
-            _message.Text = $"{voucherCount:N0} 件の伝票を表示しています。";
-            _message.Foreground = Brush.Parse("#4A5568");
+            var filteredRows = _monthRows
+                .GroupBy(x => x.EntryNumber, StringComparer.Ordinal)
+                .Where(group => MatchesFilters(group, entryNumberFilter, keywordFilter, debitAccountFilter, creditAccountFilter, minAmount, maxAmount))
+                .SelectMany(group => group)
+                .ToList();
+
+            _currentRows = filteredRows;
+            _currentEntryNumbers = filteredRows
+                .Select(x => x.EntryNumber)
+                .ToHashSet(StringComparer.Ordinal);
+
+            RenderRows();
         }
         catch (Exception ex)
         {
             _currentRows = Array.Empty<JournalBookRow>();
+            _currentEntryNumbers = [];
+            _rows.Children.Clear();
+            _debitTotal.Text = "0";
+            _creditTotal.Text = "0";
             _message.Text = ex.Message;
             _message.Foreground = Brush.Parse("#B42318");
         }
+    }
+
+    private void RenderRows()
+    {
+        _rows.Children.Clear();
+
+        if (_monthRows.Count == 0)
+        {
+            _message.Text = "この月の仕訳はありません。";
+            _message.Foreground = Brush.Parse("#4A5568");
+            _debitTotal.Text = "0";
+            _creditTotal.Text = "0";
+            return;
+        }
+
+        if (_currentRows.Count == 0)
+        {
+            _message.Text = "検索条件に一致する仕訳はありません。";
+            _message.Foreground = Brush.Parse("#4A5568");
+            _debitTotal.Text = "0";
+            _creditTotal.Text = "0";
+            return;
+        }
+
+        string? previousEntryNumber = null;
+        string? previousDescription = null;
+        foreach (var row in _currentRows)
+        {
+            var isVoucherStart = !string.Equals(previousEntryNumber, row.EntryNumber, StringComparison.Ordinal);
+            var descriptionText = ResolveDescriptionText(row.Description, isVoucherStart, previousDescription);
+            _rows.Children.Add(JournalRow(row, isVoucherStart, descriptionText));
+            previousEntryNumber = row.EntryNumber;
+            previousDescription = row.Description;
+        }
+
+        _debitTotal.Text = _currentRows.Sum(x => x.DebitAmount).ToString("N0");
+        _creditTotal.Text = _currentRows.Sum(x => x.CreditAmount).ToString("N0");
+        var voucherCount = _currentRows.Select(x => x.EntryNumber).Distinct(StringComparer.Ordinal).Count();
+        var filterCount = CountActiveFilters();
+        _message.Text = filterCount == 0
+            ? $"{voucherCount:N0} 件の仕訳を表示しています。"
+            : $"{voucherCount:N0} 件の仕訳を表示しています。検索条件: {filterCount} 件";
+        _message.Foreground = Brush.Parse("#4A5568");
+    }
+
+    private static bool MatchesFilters(
+        IGrouping<string, JournalBookRow> voucher,
+        string? entryNumberFilter,
+        string? keywordFilter,
+        string? debitAccountFilter,
+        string? creditAccountFilter,
+        decimal? minAmount,
+        decimal? maxAmount)
+    {
+        var rows = voucher.ToList();
+        var firstRow = rows[0];
+        var voucherAmount = rows.Sum(x => x.DebitAmount);
+
+        if (!string.IsNullOrWhiteSpace(entryNumberFilter) &&
+            !ContainsText(firstRow.EntryNumber, entryNumberFilter))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(keywordFilter))
+        {
+            var matchesKeyword = rows.Any(row =>
+                ContainsText(row.EntryNumber, keywordFilter) ||
+                ContainsText(row.Description, keywordFilter) ||
+                ContainsText(row.Reference, keywordFilter) ||
+                ContainsText(row.DebitAccountDisplay, keywordFilter) ||
+                ContainsText(row.CreditAccountDisplay, keywordFilter));
+
+            if (!matchesKeyword)
+            {
+                return false;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(debitAccountFilter) &&
+            !rows.Any(row => ContainsText(row.DebitAccountDisplay, debitAccountFilter)))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(creditAccountFilter) &&
+            !rows.Any(row => ContainsText(row.CreditAccountDisplay, creditAccountFilter)))
+        {
+            return false;
+        }
+
+        if (minAmount.HasValue && voucherAmount < minAmount.Value)
+        {
+            return false;
+        }
+
+        if (maxAmount.HasValue && voucherAmount > maxAmount.Value)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string? Normalize(string? value)
+    {
+        var trimmed = value?.Trim();
+        return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+    }
+
+    private static bool ContainsText(string? source, string keyword)
+    {
+        return !string.IsNullOrWhiteSpace(source) &&
+               source.Contains(keyword, StringComparison.CurrentCultureIgnoreCase);
+    }
+
+    private static decimal? ParseAmount(string? text, string label)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        if (!decimal.TryParse(text, NumberStyles.Number, CultureInfo.CurrentCulture, out var value) || value < 0)
+        {
+            throw new InvalidOperationException($"{label}は 0 以上の数値で入力してください。");
+        }
+
+        return value;
+    }
+
+    private int CountActiveFilters()
+    {
+        var count = 0;
+        if (!string.IsNullOrWhiteSpace(_entryNumberFilter.Text))
+        {
+            count++;
+        }
+        if (!string.IsNullOrWhiteSpace(_keywordFilter.Text))
+        {
+            count++;
+        }
+        if (!string.IsNullOrWhiteSpace(_debitAccountFilter.Text))
+        {
+            count++;
+        }
+        if (!string.IsNullOrWhiteSpace(_creditAccountFilter.Text))
+        {
+            count++;
+        }
+        if (!string.IsNullOrWhiteSpace(_minAmountFilter.Text))
+        {
+            count++;
+        }
+        if (!string.IsNullOrWhiteSpace(_maxAmountFilter.Text))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    private static Control SearchField(string label, Control input, int column, int row)
+    {
+        var panel = new StackPanel
+        {
+            Spacing = 4,
+            Children =
+            {
+                ViewHelpers.Label(label),
+                input
+            }
+        };
+        Grid.SetColumn(panel, column);
+        Grid.SetRow(panel, row);
+        return panel;
+    }
+
+    private static Control ButtonField(Control button, int column, int row)
+    {
+        var panel = new StackPanel
+        {
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Children =
+            {
+                new Border { Height = 28 },
+                button
+            }
+        };
+        Grid.SetColumn(panel, column);
+        Grid.SetRow(panel, row);
+        return panel;
     }
 
     private static Control JournalHeader()
@@ -244,9 +508,9 @@ public sealed class JournalBookView : UserControl
                 Children =
                 {
                     HeaderCell("日付", 0),
-                    HeaderCell("伝票番号", 1),
+                    HeaderCell("仕訳番号", 1),
                     HeaderCell("摘要", 2),
-                    HeaderCell("参照", 3),
+                    HeaderCell("証憑番号", 3),
                     HeaderCell("借方科目", 4),
                     HeaderCell("貸方科目", 5),
                     HeaderCell("借方金額", 6),
@@ -369,7 +633,10 @@ public sealed class JournalBookView : UserControl
         {
             _exportCsvButton.IsEnabled = false;
             var rows = await _database.GetJournalCsvRowsAsync(_user.CompanyId, _targetMonth, _targetMonth.AddMonths(1));
-            var csv = JournalCsvSerializer.Serialize(rows);
+            var filteredRows = rows
+                .Where(x => !string.IsNullOrWhiteSpace(x.EntryNumber) && _currentEntryNumbers.Contains(x.EntryNumber))
+                .ToList();
+            var csv = JournalCsvSerializer.Serialize(filteredRows);
             await File.WriteAllTextAsync(file.Path.LocalPath, csv, new UTF8Encoding(false));
             _message.Text = $"CSVを出力しました: {file.Name}";
             _message.Foreground = Brush.Parse("#1E6B52");
@@ -624,9 +891,9 @@ public sealed class JournalBookView : UserControl
                 Spacing = 18,
                 Children =
                 {
-                    ViewHelpers.Heading("この仕訳を削除しますか。", 22),
-                    ViewHelpers.Body($"伝票番号: {entryNumber}"),
-                    ViewHelpers.Body("削除するとその伝票に含まれるすべての仕訳行が削除され、残高も再計算されます。"),
+                    ViewHelpers.Heading("この仕訳を削除しますか", 22),
+                    ViewHelpers.Body($"仕訳番号: {entryNumber}"),
+                    ViewHelpers.Body("削除するとその仕訳に含まれるすべての明細が削除され、元に戻せません。"),
                     buttons
                 }
             })

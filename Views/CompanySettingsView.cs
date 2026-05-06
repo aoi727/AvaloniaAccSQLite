@@ -4,6 +4,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 
 namespace AccountingApp.Views;
 
@@ -33,10 +34,19 @@ public sealed class CompanySettingsView : UserControl
     private readonly TextBlock _carryForwardAmount = ViewHelpers.Body("");
     private readonly TextBlock _carryForwardStatus = ViewHelpers.Body("");
     private readonly TextBox _unlockReason = new() { PlaceholderText = "修正理由を入力してください" };
+    private readonly DatePicker _monthlyLockDate = new();
+    private readonly TextBlock _monthlyLockPeriod = ViewHelpers.Body("");
+    private readonly TextBlock _monthlyLockStatus = ViewHelpers.Body("");
+    private readonly TextBox _monthlyUnlockReason = new() { PlaceholderText = "月次ロック解除の理由を入力してください" };
+    private readonly TextBlock _databasePath = ViewHelpers.Body("");
     private readonly TextBlock _message = ViewHelpers.Body("会社設定を読み込み中です。");
-    private readonly Button _saveButton = ViewHelpers.PrimaryButton("会社情報を保存");
+    private readonly Button _saveButton = ViewHelpers.PrimaryButton("会社設定を保存");
     private readonly Button _carryForwardButton = ViewHelpers.SecondaryButton("年度締めを実行");
     private readonly Button _unlockClosingButton = ViewHelpers.SecondaryButton("年度締めを解除");
+    private readonly Button _monthlyLockButton = ViewHelpers.SecondaryButton("月次をロック");
+    private readonly Button _monthlyUnlockButton = ViewHelpers.SecondaryButton("月次ロックを解除");
+    private readonly Button _backupButton = ViewHelpers.SecondaryButton("DBバックアップを保存");
+    private bool _isLoadingMonthlyLockStatus;
 
     public CompanySettingsView(SqliteDatabase database, AppUser user, Action backToDashboard, Action<AppUser> switchCompany)
     {
@@ -48,6 +58,10 @@ public sealed class CompanySettingsView : UserControl
         _saveButton.Click += async (_, _) => await SaveAsync();
         _carryForwardButton.Click += async (_, _) => await ExecuteCarryForwardAsync();
         _unlockClosingButton.Click += async (_, _) => await UnlockClosingAsync();
+        _monthlyLockButton.Click += async (_, _) => await LockMonthlyPeriodAsync();
+        _monthlyUnlockButton.Click += async (_, _) => await UnlockMonthlyPeriodAsync();
+        _backupButton.Click += async (_, _) => await BackupDatabaseAsync();
+        _monthlyLockDate.SelectedDateChanged += async (_, _) => await LoadMonthlyLockStatusAsync();
         _isTaxExempt.IsCheckedChanged += (_, _) => ApplyTaxExemptState(_taxEntryMethod, _isTaxExempt);
         _ = LoadAsync();
     }
@@ -82,24 +96,28 @@ public sealed class CompanySettingsView : UserControl
             Spacing = 4,
             Children =
             {
-                ViewHelpers.Heading("現在の会社", 20),
-                ViewHelpers.Body("会社名、会計年度開始日、締め日、消費税の設定を管理します。"),
+                ViewHelpers.Heading("現在の会社設定", 20),
+                ViewHelpers.Body("会社名、年度開始日、締め日、消費税の入力方法を更新できます。"),
                 ViewHelpers.Label("会社名"),
                 _companyName,
-                ViewHelpers.Label("会計年度開始日"),
+                ViewHelpers.Label("年度開始日"),
                 _fiscalYearStart,
                 ViewHelpers.Label("締め日"),
                 _closingDay,
                 _isTaxExempt,
-                ViewHelpers.Label("消費税記帳方式"),
+                ViewHelpers.Label("消費税入力方式"),
                 _taxEntryMethod,
-                ViewHelpers.Body("免税事業者では税込方式に固定されます。"),
+                ViewHelpers.Body("免税事業者の場合は総額方式に固定されます。"),
                 new Border { Height = 8 },
                 _saveButton
             }
         });
+
         _carryForwardButton.Width = 180;
         _unlockClosingButton.Width = 180;
+        _monthlyLockButton.Width = 180;
+        _monthlyUnlockButton.Width = 180;
+        _backupButton.Width = 220;
 
         var carryForwardPanel = ViewHelpers.Panel(new StackPanel
         {
@@ -108,14 +126,14 @@ public sealed class CompanySettingsView : UserControl
             Children =
             {
                 ViewHelpers.Heading("年度締め", 20),
-                ViewHelpers.Body("対象年度を締め、翌年度開始日の繰越仕訳を作成または更新します。締め済み年度は仕訳の保存・削除がロックされます。"),
+                ViewHelpers.Body("対象年度を締めて、翌年度開始日に繰越仕訳を作成します。締め済み年度は仕訳の登録や削除がロックされます。"),
                 ViewHelpers.Label("対象期間"),
                 _carryForwardPeriod,
-                ViewHelpers.Label("繰越先の資本科目"),
+                ViewHelpers.Label("繰越損益の振替先"),
                 _carryForwardAccount,
                 ViewHelpers.Label("当期純利益"),
                 _carryForwardAmount,
-                ViewHelpers.Label("締め状態"),
+                ViewHelpers.Label("締めの状態"),
                 _carryForwardStatus,
                 ViewHelpers.Label("締め解除理由"),
                 _unlockReason,
@@ -125,10 +143,47 @@ public sealed class CompanySettingsView : UserControl
             }
         });
 
+        var monthlyLockPanel = ViewHelpers.Panel(new StackPanel
+        {
+            Width = 420,
+            Spacing = 6,
+            Children =
+            {
+                ViewHelpers.Heading("月次ロック", 20),
+                ViewHelpers.Body("選択した日付が属する会計月をロックします。ロック済み月次は仕訳の登録、更新、削除、CSV取込ができなくなります。"),
+                ViewHelpers.Label("対象日"),
+                _monthlyLockDate,
+                ViewHelpers.Label("対象期間"),
+                _monthlyLockPeriod,
+                ViewHelpers.Label("ロック状態"),
+                _monthlyLockStatus,
+                ViewHelpers.Label("解除理由"),
+                _monthlyUnlockReason,
+                new Border { Height = 8 },
+                _monthlyLockButton,
+                _monthlyUnlockButton
+            }
+        });
+
+        var backupPanel = ViewHelpers.Panel(new StackPanel
+        {
+            Width = 420,
+            Spacing = 6,
+            Children =
+            {
+                ViewHelpers.Heading("DBバックアップ", 20),
+                ViewHelpers.Body("現在利用中の SQLite DB を別ファイルとして保存します。障害時の復旧や定期退避に使えます。"),
+                ViewHelpers.Label("現在のDBファイル"),
+                _databasePath,
+                new Border { Height = 8 },
+                _backupButton
+            }
+        });
+
         var body = new StackPanel
         {
             Spacing = 18,
-            Children = { header, settingsPanel, carryForwardPanel, _message }
+            Children = { header, settingsPanel, carryForwardPanel, monthlyLockPanel, backupPanel, _message }
         };
 
         return new ScrollViewer
@@ -152,9 +207,12 @@ public sealed class CompanySettingsView : UserControl
             _taxEntryMethod.SelectedItem = CreateTaxEntryMethodOptions().FirstOrDefault(x => x.Value == settings.TaxEntryMethod);
             _isTaxExempt.IsChecked = settings.IsTaxExempt;
             ApplyTaxExemptState(_taxEntryMethod, _isTaxExempt);
+            _databasePath.Text = _database.GetDatabaseFilePath() ?? "現在のDBパスを取得できません。";
+            _monthlyLockDate.SelectedDate ??= new DateTimeOffset(DateTime.Today);
 
             await LoadCarryForwardStatusAsync();
-            _message.Text = "会社設定を表示しています。";
+            await LoadMonthlyLockStatusAsync();
+            _message.Text = "会社設定を表示しました。";
             _message.Foreground = Brush.Parse("#4A5568");
         }
         catch (Exception ex)
@@ -174,7 +232,7 @@ public sealed class CompanySettingsView : UserControl
 
         if (_taxEntryMethod.SelectedItem is not TaxEntryMethodOption taxEntryMethod)
         {
-            SetError("消費税記帳方式を選択してください。");
+            SetError("消費税入力方式を選択してください。");
             return;
         }
 
@@ -192,7 +250,7 @@ public sealed class CompanySettingsView : UserControl
                 isTaxExempt);
 
             var updatedUser = _user with { CompanyName = (_companyName.Text ?? "").Trim() };
-            _message.Text = "会社情報を更新しました。";
+            _message.Text = "会社設定を更新しました。";
             _message.Foreground = Brush.Parse("#1E6B52");
             _switchCompany(updatedUser);
         }
@@ -203,6 +261,60 @@ public sealed class CompanySettingsView : UserControl
         finally
         {
             _saveButton.IsEnabled = true;
+        }
+    }
+
+    private async Task BackupDatabaseAsync()
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        var storageProvider = topLevel?.StorageProvider;
+        if (storageProvider is null)
+        {
+            SetError("バックアップ保存ダイアログを開けませんでした。");
+            return;
+        }
+
+        var currentDatabasePath = _database.GetDatabaseFilePath();
+        var baseFileName = string.IsNullOrWhiteSpace(currentDatabasePath)
+            ? "accounting_app"
+            : Path.GetFileNameWithoutExtension(currentDatabasePath);
+
+        var file = await storageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "DBバックアップを保存",
+            SuggestedFileName = $"{baseFileName}_backup_{DateTime.Now:yyyyMMdd_HHmmss}.db",
+            DefaultExtension = "db",
+            FileTypeChoices =
+            [
+                new FilePickerFileType("SQLite DB")
+                {
+                    Patterns = ["*.db", "*.sqlite", "*.sqlite3"],
+                    MimeTypes = ["application/vnd.sqlite3", "application/x-sqlite3", "application/octet-stream"]
+                }
+            ],
+            ShowOverwritePrompt = true
+        });
+
+        var path = file?.Path.LocalPath;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            _backupButton.IsEnabled = false;
+            await _database.BackupDatabaseAsync(path);
+            _message.Text = $"DBバックアップを保存しました: {file!.Name}";
+            _message.Foreground = Brush.Parse("#1E6B52");
+        }
+        catch (Exception ex)
+        {
+            SetError(ex.Message);
+        }
+        finally
+        {
+            _backupButton.IsEnabled = true;
         }
     }
 
@@ -260,13 +372,99 @@ public sealed class CompanySettingsView : UserControl
             _unlockClosingButton.IsEnabled = false;
             await _database.UnlockAnnualClosingAsync(_user.CompanyId, _user.UserId, status.SourceFiscalYearStart, _unlockReason.Text ?? "");
             await LoadCarryForwardStatusAsync();
-            _message.Text = "年度締めを解除しました。修正後は再度年度締めを実行してください。";
+            _message.Text = "年度締めを解除しました。必要に応じて再度年度締めを実行してください。";
             _message.Foreground = Brush.Parse("#1E6B52");
         }
         catch (Exception ex)
         {
             SetError(ex.Message);
             await LoadCarryForwardStatusAsync();
+        }
+    }
+
+    private async Task LoadMonthlyLockStatusAsync()
+    {
+        if (_isLoadingMonthlyLockStatus)
+        {
+            return;
+        }
+
+        try
+        {
+            _isLoadingMonthlyLockStatus = true;
+            var targetDate = (_monthlyLockDate.SelectedDate?.DateTime ?? DateTime.Today).Date;
+            if (!_monthlyLockDate.SelectedDate.HasValue)
+            {
+                _monthlyLockDate.SelectedDate = new DateTimeOffset(targetDate);
+            }
+
+            var status = await _database.GetMonthlyLockStatusAsync(_user.CompanyId, targetDate);
+            _monthlyLockPeriod.Text = $"{status.PeriodStart:yyyy/MM/dd} から {status.PeriodEnd:yyyy/MM/dd}";
+            _monthlyUnlockReason.Text = "";
+
+            if (status.IsLocked)
+            {
+                _monthlyLockStatus.Text = status.LockedAt.HasValue
+                    ? $"ロック済み ({status.LockedAt:yyyy/MM/dd HH:mm})"
+                    : "ロック済み";
+                _monthlyLockStatus.Foreground = Brush.Parse("#1E6B52");
+                _monthlyLockButton.IsEnabled = false;
+                _monthlyUnlockReason.IsEnabled = true;
+                _monthlyUnlockButton.IsEnabled = true;
+                return;
+            }
+
+            _monthlyLockStatus.Text = status.UnlockedAt.HasValue
+                ? $"解除中 ({status.UnlockedAt:yyyy/MM/dd HH:mm})"
+                : "未ロック";
+            _monthlyLockStatus.Foreground = Brush.Parse("#4A5568");
+            _monthlyLockButton.IsEnabled = true;
+            _monthlyUnlockReason.IsEnabled = false;
+            _monthlyUnlockButton.IsEnabled = false;
+        }
+        catch (Exception ex)
+        {
+            SetError(ex.Message);
+        }
+        finally
+        {
+            _isLoadingMonthlyLockStatus = false;
+        }
+    }
+
+    private async Task LockMonthlyPeriodAsync()
+    {
+        try
+        {
+            var targetDate = (_monthlyLockDate.SelectedDate?.DateTime ?? DateTime.Today).Date;
+            _monthlyLockButton.IsEnabled = false;
+            await _database.LockMonthlyPeriodAsync(_user.CompanyId, _user.UserId, targetDate);
+            await LoadMonthlyLockStatusAsync();
+            _message.Text = "月次をロックしました。対象期間の仕訳変更はできません。";
+            _message.Foreground = Brush.Parse("#1E6B52");
+        }
+        catch (Exception ex)
+        {
+            SetError(ex.Message);
+            await LoadMonthlyLockStatusAsync();
+        }
+    }
+
+    private async Task UnlockMonthlyPeriodAsync()
+    {
+        try
+        {
+            var targetDate = (_monthlyLockDate.SelectedDate?.DateTime ?? DateTime.Today).Date;
+            _monthlyUnlockButton.IsEnabled = false;
+            await _database.UnlockMonthlyPeriodAsync(_user.CompanyId, _user.UserId, targetDate, _monthlyUnlockReason.Text ?? "");
+            await LoadMonthlyLockStatusAsync();
+            _message.Text = "月次ロックを解除しました。必要な修正後は再度ロックしてください。";
+            _message.Foreground = Brush.Parse("#1E6B52");
+        }
+        catch (Exception ex)
+        {
+            SetError(ex.Message);
+            await LoadMonthlyLockStatusAsync();
         }
     }
 
@@ -299,7 +497,7 @@ public sealed class CompanySettingsView : UserControl
     {
         return
         [
-            new("gross", "税込方式"),
+            new("gross", "総額方式"),
             new("net", "税抜方式")
         ];
     }
@@ -309,10 +507,5 @@ public sealed class CompanySettingsView : UserControl
         return amount < 0
             ? $"△{Math.Abs(amount):N0}"
             : amount.ToString("N0");
-    }
-
-    private static DateTime GetDefaultFiscalYearStart(DateTime referenceDate)
-    {
-        return new DateTime(referenceDate.Year, 1, 1);
     }
 }

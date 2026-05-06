@@ -24,7 +24,9 @@ public sealed class DashboardView : UserControl
     private readonly Action _openTrialBalance;
     private readonly Action _openBalanceSheet;
     private readonly Action _openProfitAndLoss;
+    private readonly Action _openTaxSummary;
     private readonly Action _openCompanySettings;
+    private readonly Action _openOperationLogs;
     private readonly WrapPanel _summary = new()
     {
         Orientation = Orientation.Horizontal,
@@ -49,7 +51,9 @@ public sealed class DashboardView : UserControl
         Action openTrialBalance,
         Action openBalanceSheet,
         Action openProfitAndLoss,
-        Action openCompanySettings)
+        Action openTaxSummary,
+        Action openCompanySettings,
+        Action openOperationLogs)
     {
         _database = database;
         _user = user;
@@ -66,7 +70,9 @@ public sealed class DashboardView : UserControl
         _openTrialBalance = openTrialBalance;
         _openBalanceSheet = openBalanceSheet;
         _openProfitAndLoss = openProfitAndLoss;
+        _openTaxSummary = openTaxSummary;
         _openCompanySettings = openCompanySettings;
+        _openOperationLogs = openOperationLogs;
         Content = Build();
         _ = LoadAsync();
     }
@@ -121,7 +127,8 @@ public sealed class DashboardView : UserControl
                 CreateMenuButton("取引先別取引一覧", false, _ => _openBusinessPartnerTransactions()),
                 CreateMenuButton("試算表", false, _ => _openTrialBalance()),
                 CreateMenuButton("貸借対照表", false, _ => _openBalanceSheet()),
-                CreateMenuButton("損益計算書", false, _ => _openProfitAndLoss())
+                CreateMenuButton("損益計算書", false, _ => _openProfitAndLoss()),
+                CreateMenuButton("消費税集計", false, _ => _openTaxSummary())
             ]);
 
         var managementPanel = string.Equals(_user.Role, "admin", StringComparison.OrdinalIgnoreCase)
@@ -132,7 +139,8 @@ public sealed class DashboardView : UserControl
                     CreateMenuButton("勘定科目", false, _ => _openAccountForm()),
                     CreateMenuButton("補助科目", false, _ => _openSubAccountForm()),
                     CreateMenuButton("取引先", false, _ => _openBusinessPartnerForm()),
-                    CreateMenuButton("ユーザー", false, _ => _openUserForm())
+                    CreateMenuButton("ユーザー", false, _ => _openUserForm()),
+                    CreateMenuButton("操作履歴", false, _ => _openOperationLogs())
                 ])
             : CreateSectionPanel(
                 "管理",

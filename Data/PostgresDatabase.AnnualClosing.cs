@@ -22,6 +22,7 @@ public sealed partial class SqliteDatabase
             var nextFiscalYearStart = GetFiscalYearStartForDate(settings.FiscalYearStart, today.Date);
             var sourceFiscalYearStart = ShiftFiscalYearStart(settings.FiscalYearStart, nextFiscalYearStart, -1);
             var sourceFiscalYearEnd = nextFiscalYearStart.AddDays(-1);
+            await EnsureJournalDateOpenAsync(connection, transaction, companyId, nextFiscalYearStart);
 
             var closing = await GetAnnualClosingAsync(connection, transaction, companyId, sourceFiscalYearStart);
             if (closing is not null && string.Equals(closing.Status, "closed", StringComparison.OrdinalIgnoreCase))
@@ -240,8 +241,9 @@ public sealed partial class SqliteDatabase
         DateTime entryDate)
     {
         await EnsureAnnualClosingSchemaAsync(connection, transaction);
+        await EnsureMonthlyLockSchemaAsync(connection, transaction);
 
-        const string sql = @"
+        const string annualClosingSql = @"
     SELECT fiscal_year_start, fiscal_year_end
     FROM annual_closings
     WHERE company_id = @company_id
@@ -249,7 +251,7 @@ public sealed partial class SqliteDatabase
       AND @entry_date BETWEEN fiscal_year_start AND fiscal_year_end
     LIMIT 1";
 
-        await using var command = new SqliteCommand(sql, connection, transaction);
+        await using var command = new SqliteCommand(annualClosingSql, connection, transaction);
         command.Parameters.AddWithValue("company_id", companyId);
         command.Parameters.AddWithValue("entry_date", (object?)(entryDate.Date) ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync();
@@ -258,6 +260,25 @@ public sealed partial class SqliteDatabase
             var from = reader.GetDateTime(0);
             var to = reader.GetDateTime(1);
             throw new InvalidOperationException($"締め済み年度の仕訳は変更できません。対象年度: {from:yyyy/MM/dd} - {to:yyyy/MM/dd}");
+        }
+
+        const string monthlyLockSql = @"
+    SELECT period_start, period_end
+    FROM monthly_locks
+    WHERE company_id = @company_id
+      AND status = 'closed'
+      AND @entry_date BETWEEN period_start AND period_end
+    LIMIT 1";
+
+        await using var monthlyCommand = new SqliteCommand(monthlyLockSql, connection, transaction);
+        monthlyCommand.Parameters.AddWithValue("company_id", companyId);
+        monthlyCommand.Parameters.AddWithValue("entry_date", (object?)(entryDate.Date) ?? DBNull.Value);
+        await using var monthlyReader = await monthlyCommand.ExecuteReaderAsync();
+        if (await monthlyReader.ReadAsync())
+        {
+            var from = monthlyReader.GetDateTime(0);
+            var to = monthlyReader.GetDateTime(1);
+            throw new InvalidOperationException($"ロック済み月次の仕訳は変更できません。対象期間: {from:yyyy/MM/dd} - {to:yyyy/MM/dd}");
         }
     }
 

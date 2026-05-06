@@ -223,6 +223,23 @@ CREATE TABLE IF NOT EXISTS annual_closings (
     CHECK (status IN ('open','closed'))
 );
 
+CREATE TABLE IF NOT EXISTS monthly_locks (
+    monthly_lock_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id      INTEGER NOT NULL REFERENCES companies(company_id),
+    period_start    DATE NOT NULL,
+    period_end      DATE NOT NULL,
+    status          VARCHAR(20) NOT NULL DEFAULT 'open',
+    locked_by       INTEGER REFERENCES users(user_id),
+    locked_at       TIMESTAMP,
+    unlocked_by     INTEGER REFERENCES users(user_id),
+    unlocked_at     TIMESTAMP,
+    unlock_reason   TEXT,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(company_id, period_start),
+    CHECK (status IN ('open','closed'))
+);
+
 CREATE TABLE IF NOT EXISTS operation_logs (
     log_id              INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id          INTEGER NOT NULL REFERENCES companies(company_id),
@@ -233,6 +250,40 @@ CREATE TABLE IF NOT EXISTS operation_logs (
     summary             TEXT NOT NULL,
     metadata_json       TEXT,
     occurred_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS journal_templates (
+    template_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id          INTEGER NOT NULL REFERENCES companies(company_id),
+    name                VARCHAR(100) NOT NULL,
+    reference           VARCHAR(100),
+    is_single_entry_mode BOOLEAN NOT NULL DEFAULT FALSE,
+    created_by          INTEGER REFERENCES users(user_id),
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(company_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS journal_template_rows (
+    template_row_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    template_id             INTEGER NOT NULL REFERENCES journal_templates(template_id) ON DELETE CASCADE,
+    row_no                  INTEGER NOT NULL,
+    description             TEXT,
+    partner_id              INTEGER REFERENCES business_partners(partner_id),
+    invoice_number          VARCHAR(100),
+    debit_account_id        INTEGER REFERENCES accounts(account_id),
+    debit_sub_account_id    INTEGER DEFAULT 0,
+    debit_tax_code_id       INTEGER REFERENCES tax_codes(tax_code_id),
+    debit_tax_input_type    VARCHAR(10) DEFAULT 'none',
+    debit_amount            NUMERIC(15,2),
+    credit_account_id       INTEGER REFERENCES accounts(account_id),
+    credit_sub_account_id   INTEGER DEFAULT 0,
+    credit_tax_code_id      INTEGER REFERENCES tax_codes(tax_code_id),
+    credit_tax_input_type   VARCHAR(10) DEFAULT 'none',
+    credit_amount           NUMERIC(15,2),
+    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(template_id, row_no)
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_companies_company ON user_companies(company_id);
@@ -253,6 +304,10 @@ CREATE INDEX IF NOT EXISTS idx_sub_account_balances_company_period ON sub_accoun
 CREATE INDEX IF NOT EXISTS idx_annual_carry_forwards_company_start ON annual_carry_forwards(company_id, next_fiscal_year_start);
 CREATE INDEX IF NOT EXISTS idx_annual_closings_company_year ON annual_closings(company_id, fiscal_year_start);
 CREATE INDEX IF NOT EXISTS idx_annual_closings_company_status ON annual_closings(company_id, status);
+CREATE INDEX IF NOT EXISTS idx_monthly_locks_company_period ON monthly_locks(company_id, period_start, period_end);
+CREATE INDEX IF NOT EXISTS idx_monthly_locks_company_status ON monthly_locks(company_id, status);
 CREATE INDEX IF NOT EXISTS idx_journal_vouchers_company_source ON journal_vouchers(company_id, source_type, source_key);
 CREATE INDEX IF NOT EXISTS idx_operation_logs_company_time ON operation_logs(company_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_operation_logs_company_target ON operation_logs(company_id, target_type, target_key);
+CREATE INDEX IF NOT EXISTS idx_journal_templates_company_name ON journal_templates(company_id, name);
+CREATE INDEX IF NOT EXISTS idx_journal_template_rows_template_row_no ON journal_template_rows(template_id, row_no);
