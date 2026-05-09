@@ -7,6 +7,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 
 namespace AccountingApp.Views;
 
@@ -30,6 +31,9 @@ public sealed class JournalEntryFormView : UserControl
     private readonly Action _backToDashboard;
     private readonly string? _editingEntryNumber;
     private readonly ComboBox _templateSelector = new() { MinWidth = 240 };
+    private readonly StackPanel _attachmentList = new() { Spacing = 8 };
+    private readonly TextBlock _attachmentModeHint = ViewHelpers.Body("");
+    private readonly Button _addAttachmentButton = ViewHelpers.SecondaryButton("証憑ファイルを追加");
     private readonly TextBox _templateName = new() { PlaceholderText = "定型仕訳名" };
     private readonly DatePicker _entryDate = new() { SelectedDate = new DateTimeOffset(DateTime.Today) };
     private readonly TextBox _entryNumber = new() { PlaceholderText = "自動採番できます" };
@@ -52,6 +56,7 @@ public sealed class JournalEntryFormView : UserControl
     private readonly List<TaxCode> _taxCodes = [];
     private readonly List<BusinessPartner> _partners = [];
     private readonly List<JournalTemplateSummary> _templates = [];
+    private readonly List<JournalVoucherAttachment> _attachments = [];
     private readonly List<VoucherRowControls> _rows = [];
     private Grid? _voucherGrid;
     private bool _isTaxExempt;
@@ -69,6 +74,7 @@ public sealed class JournalEntryFormView : UserControl
         Content = Build();
         _entryDate.SelectedDateChanged += async (_, _) => await EntryDateChangedAsync();
         _saveButton.Click += async (_, _) => await SaveAsync();
+        _addAttachmentButton.Click += async (_, _) => await AddAttachmentsAsync();
         _applyTemplateButton.Click += async (_, _) => await ApplySelectedTemplateAsync();
         _saveTemplateButton.Click += async (_, _) => await SaveTemplateAsync();
         _deleteTemplateButton.Click += async (_, _) => await DeleteSelectedTemplateAsync();
@@ -84,6 +90,7 @@ public sealed class JournalEntryFormView : UserControl
         backButton.Click += (_, _) => _backToDashboard();
 
         _saveButton.Width = 120;
+        _addAttachmentButton.Width = 160;
         _applyTemplateButton.Width = 90;
         _saveTemplateButton.Width = 90;
         _deleteTemplateButton.Width = 90;
@@ -190,6 +197,19 @@ public sealed class JournalEntryFormView : UserControl
             }
         });
 
+        var attachmentPanel = ViewHelpers.Panel(new StackPanel
+        {
+            Spacing = 10,
+            Children =
+            {
+                ViewHelpers.Heading("証憑ファイル", 18),
+                ViewHelpers.Body("領収書や請求書の PDF・画像を仕訳にひも付けできます。"),
+                _attachmentModeHint,
+                _addAttachmentButton,
+                _attachmentList
+            }
+        });
+
         var table = BuildVoucherTable();
 
         var topArea = new StackPanel
@@ -206,7 +226,8 @@ public sealed class JournalEntryFormView : UserControl
                     {
                         meta,
                         singleModePanel,
-                        templatePanel
+                        templatePanel,
+                        attachmentPanel
                     }
                 })
             }
@@ -503,6 +524,147 @@ public sealed class JournalEntryFormView : UserControl
         return button;
     }
 
+    private async Task AddAttachmentsAsync()
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        var storageProvider = topLevel?.StorageProvider;
+        if (storageProvider is null)
+        {
+            SetMessage("証憑ファイル選択を開けませんでした。", true);
+            return;
+        }
+
+        var files = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "証憑ファイルを選択",
+            AllowMultiple = true,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("PDF / 画像")
+                {
+                    Patterns = ["*.pdf", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp", "*.webp", "*.tif", "*.tiff"],
+                    MimeTypes = ["application/pdf", "image/png", "image/jpeg", "image/gif", "image/bmp", "image/webp", "image/tiff"]
+                },
+                FilePickerFileTypes.All
+            ]
+        });
+
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var file in files)
+        {
+            await using var stream = await file.OpenReadAsync();
+            using var memory = new MemoryStream();
+            await stream.CopyToAsync(memory);
+            _attachments.Add(new JournalVoucherAttachment(
+                null,
+                file.Name,
+                GuessContentType(file.Name),
+                memory.ToArray()));
+        }
+
+        RenderAttachments();
+        SetMessage($"{files.Count:N0} 件の証憑ファイルを追加しました。", false);
+    }
+
+    private void RenderAttachments()
+    {
+        _attachmentList.Children.Clear();
+        if (_attachments.Count == 0)
+        {
+            _attachmentList.Children.Add(ViewHelpers.Body("添付ファイルはありません。"));
+            return;
+        }
+
+        for (var i = 0; i < _attachments.Count; i++)
+        {
+            var index = i;
+            var attachment = _attachments[i];
+            var openButton = ViewHelpers.SecondaryButton("開く");
+            openButton.Width = 70;
+            openButton.Click += async (_, _) => await OpenAttachmentAsync(attachment);
+
+            var removeButton = ViewHelpers.SecondaryButton("外す");
+            removeButton.Width = 70;
+            removeButton.Background = Brush.Parse("#B42318");
+            removeButton.Foreground = Brushes.White;
+            removeButton.Click += (_, _) =>
+            {
+                _attachments.RemoveAt(index);
+                RenderAttachments();
+            };
+
+            _attachmentList.Children.Add(new Border
+            {
+                Background = Brushes.White,
+                BorderBrush = Brush.Parse("#D9DEE7"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 8),
+                Child = new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto,8,Auto"),
+                    Children =
+                    {
+                        new StackPanel
+                        {
+                            Spacing = 2,
+                            Children =
+                            {
+                                ViewHelpers.Body(attachment.FileName),
+                                ViewHelpers.Body($"{attachment.Content.LongLength / 1024.0:N1} KB")
+                            }
+                        },
+                        openButton,
+                        removeButton
+                    }
+                }
+            });
+            Grid.SetColumn(openButton, 1);
+            Grid.SetColumn(removeButton, 3);
+        }
+    }
+
+    private async Task OpenAttachmentAsync(JournalVoucherAttachment attachment)
+    {
+        try
+        {
+            var extension = Path.GetExtension(attachment.FileName);
+            var safeExtension = string.IsNullOrWhiteSpace(extension) ? ".bin" : extension;
+            var tempDirectory = Path.Combine(Path.GetTempPath(), "AccountingApp", "attachments");
+            Directory.CreateDirectory(tempDirectory);
+            var tempPath = Path.Combine(tempDirectory, $"{Guid.NewGuid():N}{safeExtension}");
+            await File.WriteAllBytesAsync(tempPath, attachment.Content);
+            var error = FileLauncher.Open(tempPath, "証憑ファイル");
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                SetMessage(error, true);
+            }
+        }
+        catch (Exception ex)
+        {
+            SetMessage(ex.Message, true);
+        }
+    }
+
+    private static string? GuessContentType(string fileName)
+    {
+        return Path.GetExtension(fileName).ToLowerInvariant() switch
+        {
+            ".pdf" => "application/pdf",
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".bmp" => "image/bmp",
+            ".webp" => "image/webp",
+            ".tif" or ".tiff" => "image/tiff",
+            _ => null
+        };
+    }
+
     private async Task LoadAsync()
     {
         try
@@ -541,6 +703,7 @@ public sealed class JournalEntryFormView : UserControl
                 row.SetSources(_selectableAccounts, _taxCodes, _partners, _taxInputOptions, GetDefaultTaxInputTypeIndex());
             }
 
+            RenderAttachments();
             await LoadTemplatesAsync();
 
             ApplyTaxModeUi();
@@ -884,6 +1047,11 @@ public sealed class JournalEntryFormView : UserControl
     private void ApplySingleEntryModeUi()
     {
         var isSingleMode = _singleEntryMode.IsChecked == true;
+        _addAttachmentButton.IsEnabled = !isSingleMode;
+        _attachmentModeHint.Text = isSingleMode
+            ? "単仕訳モードでは証憑ファイルを添付できません。添付したい場合は通常モードで登録してください。"
+            : "証憑ファイルは伝票単位で複数添付できます。";
+        _attachmentModeHint.Foreground = isSingleMode ? Brush.Parse("#B42318") : Brush.Parse("#4A5568");
         foreach (var row in _rows)
         {
             row.CreditAmount.IsEnabled = !isSingleMode;
@@ -979,6 +1147,10 @@ public sealed class JournalEntryFormView : UserControl
             _entryNumber.Text = summary.EntryNumber;
             _reference.Text = summary.Reference ?? "";
         }
+
+        _attachments.Clear();
+        _attachments.AddRange(await _database.GetJournalVoucherAttachmentsAsync(_user.CompanyId, entryNumber));
+        RenderAttachments();
 
         var lines = await _database.GetJournalLinesAsync(_user.CompanyId, entryNumber);
         var debitLines = lines.Where(x => x.Side == "debit").ToList();
@@ -1264,6 +1436,8 @@ public sealed class JournalEntryFormView : UserControl
     {
         _reference.Text = "";
         _entryNumber.Text = await _database.GetNextEntryNumberAsync(_user.CompanyId, entryDate);
+        _attachments.Clear();
+        RenderAttachments();
         ClearVoucherRows();
         SyncSingleModeRows();
         UpdateTotals();
@@ -1365,6 +1539,7 @@ public sealed class JournalEntryFormView : UserControl
         try
         {
             _saveButton.IsEnabled = false;
+            _addAttachmentButton.IsEnabled = false;
             var date = _entryDate.SelectedDate?.DateTime.Date ?? DateTime.Today;
             if (_singleEntryMode.IsChecked == true)
             {
@@ -1400,6 +1575,7 @@ public sealed class JournalEntryFormView : UserControl
                 _reference.Text,
                 _user.UserId,
                 inputs,
+                _attachments,
                 _editingEntryNumber);
 
             await ShowNoticeAsync(
@@ -1423,11 +1599,17 @@ public sealed class JournalEntryFormView : UserControl
         finally
         {
             _saveButton.IsEnabled = true;
+            _addAttachmentButton.IsEnabled = true;
         }
     }
 
     private async Task SaveSingleEntryModeAsync(DateTime date)
     {
+        if (_attachments.Count > 0)
+        {
+            SetMessage("証憑ファイル添付がある場合は、単仕訳モードをオフにして通常の仕訳として保存してください。", true);
+            return;
+        }
         if (_editingEntryNumber is not null)
         {
             SetMessage("既存伝票の編集では単仕訳モードを使用できません。", true);

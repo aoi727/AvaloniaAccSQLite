@@ -11,6 +11,8 @@ public sealed class MainWindow : Window
     private AppUser? _currentUser;
     private DateTime? _journalBookTargetMonth;
     private (int AccountId, int? SubAccountId, DateTime PeriodStart)? _generalLedgerSelection;
+    private bool _allowWindowClose;
+    private bool _isCloseConfirmationOpen;
 
     public MainWindow(SqliteDatabase database, bool openedFromNewDatabase)
     {
@@ -22,7 +24,85 @@ public sealed class MainWindow : Window
         MinWidth = 960;
         MinHeight = 600;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        Closing += OnClosing;
         ShowLogin();
+    }
+
+    private async void OnClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (_allowWindowClose)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        if (_isCloseConfirmationOpen)
+        {
+            return;
+        }
+
+        _isCloseConfirmationOpen = true;
+        try
+        {
+            var confirmed = await ShowCloseConfirmationAsync();
+            if (!confirmed)
+            {
+                return;
+            }
+
+            _allowWindowClose = true;
+            Close();
+        }
+        finally
+        {
+            _isCloseConfirmationOpen = false;
+        }
+    }
+
+    private async Task<bool> ShowCloseConfirmationAsync()
+    {
+        var closeButton = ViewHelpers.PrimaryButton("終了する");
+        closeButton.Width = 120;
+        closeButton.Background = Avalonia.Media.Brush.Parse("#B42318");
+
+        var cancelButton = ViewHelpers.SecondaryButton("キャンセル");
+        cancelButton.Width = 120;
+
+        var buttons = new StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            Spacing = 12,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            Children = { closeButton, cancelButton }
+        };
+
+        var dialog = new Window
+        {
+            Title = "終了確認",
+            Width = 420,
+            Height = 200,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new Border
+            {
+                Padding = new Avalonia.Thickness(20),
+                Child = ViewHelpers.Panel(new StackPanel
+                {
+                    Spacing = 18,
+                    Children =
+                    {
+                        ViewHelpers.Heading("アプリを終了しますか", 22),
+                        ViewHelpers.Body("未保存の内容がある場合は、終了前に保存してください。"),
+                        buttons
+                    }
+                })
+            }
+        };
+
+        closeButton.Click += (_, _) => dialog.Close(true);
+        cancelButton.Click += (_, _) => dialog.Close(false);
+
+        return await dialog.ShowDialog<bool>(this);
     }
 
     private void ShowLogin()
@@ -213,7 +293,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        SetContent(new CompanySettingsView(_database, _currentUser, () => ShowDashboard(_currentUser), ShowDashboard));
+        SetContent(new CompanySettingsView(_database, _currentUser, () => ShowDashboard(_currentUser), ShowDashboard, ShowLogin));
     }
 
     private void ShowOperationLogs()

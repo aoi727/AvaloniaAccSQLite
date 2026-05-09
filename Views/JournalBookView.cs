@@ -12,12 +12,19 @@ namespace AccountingApp.Views;
 
 public sealed class JournalBookView : UserControl
 {
+    private enum PeriodMode
+    {
+        Month,
+        FiscalYear
+    }
+
     private readonly SqliteDatabase _database;
     private readonly AppUser _user;
     private readonly Action _backToDashboard;
     private readonly Action<string?, DateTime> _openJournalForm;
     private readonly StackPanel _rows = new() { Spacing = 0 };
-    private readonly TextBlock _monthLabel = ViewHelpers.Heading("", 20);
+    private readonly Grid _searchControlsPanel = new();
+    private readonly TextBlock _periodLabel = ViewHelpers.Heading("", 20);
     private readonly TextBlock _message = new()
     {
         Text = "仕訳帳を読み込み中です。",
@@ -29,21 +36,27 @@ public sealed class JournalBookView : UserControl
     };
     private readonly TextBlock _debitTotal = ViewHelpers.Body("0");
     private readonly TextBlock _creditTotal = ViewHelpers.Body("0");
-    private readonly Button _previousMonthButton = ViewHelpers.SecondaryButton("前月");
+    private readonly Button _previousPeriodButton = ViewHelpers.SecondaryButton("前へ");
     private readonly Button _importCsvButton = ViewHelpers.SecondaryButton("CSV取込");
     private readonly Button _exportCsvButton = ViewHelpers.SecondaryButton("CSV出力");
     private readonly Button _exportPdfButton = ViewHelpers.SecondaryButton("PDF出力");
-    private readonly TextBox _entryNumberFilter = new() { PlaceholderText = "仕訳番号" };
-    private readonly TextBox _keywordFilter = new() { PlaceholderText = "摘要・証憑番号・科目名" };
-    private readonly TextBox _debitAccountFilter = new() { PlaceholderText = "借方科目" };
-    private readonly TextBox _creditAccountFilter = new() { PlaceholderText = "貸方科目" };
+    private readonly Button _searchToggleButton = ViewHelpers.SecondaryButton("検索機能を表示");
+    private readonly RadioButton _monthModeButton = new() { Content = "月次", GroupName = "journal-book-period", IsChecked = true };
+    private readonly RadioButton _fiscalYearModeButton = new() { Content = "年度", GroupName = "journal-book-period" };
+    private readonly TextBox _partnerFilter = new() { PlaceholderText = "取引先名" };
+    private readonly TextBox _accountFilter = new() { PlaceholderText = "借方・貸方をまとめて検索" };
     private readonly TextBox _minAmountFilter = new() { PlaceholderText = "下限金額" };
     private readonly TextBox _maxAmountFilter = new() { PlaceholderText = "上限金額" };
+    private readonly TextBox _referenceFilter = new() { PlaceholderText = "証憑番号" };
+    private readonly TextBox _descriptionFilter = new() { PlaceholderText = "摘要キーワード" };
+    private PeriodMode _periodMode = PeriodMode.Month;
     private DateTime _targetMonth;
+    private DateTime _fiscalYearTemplate;
     private DateTime? _minimumMonth;
-    private IReadOnlyList<JournalBookRow> _monthRows = Array.Empty<JournalBookRow>();
+    private IReadOnlyList<JournalBookRow> _periodRows = Array.Empty<JournalBookRow>();
     private IReadOnlyList<JournalBookRow> _currentRows = Array.Empty<JournalBookRow>();
     private HashSet<string> _currentEntryNumbers = [];
+    private bool _isSearchPanelVisible;
 
     public JournalBookView(SqliteDatabase database, AppUser user, Action backToDashboard, Action<string?, DateTime> openJournalForm, DateTime initialTargetMonth)
     {
@@ -52,6 +65,7 @@ public sealed class JournalBookView : UserControl
         _backToDashboard = backToDashboard;
         _openJournalForm = openJournalForm;
         _targetMonth = new DateTime(initialTargetMonth.Year, initialTargetMonth.Month, 1);
+        _fiscalYearTemplate = _targetMonth;
         Content = Build();
         _ = LoadAsync();
     }
@@ -75,38 +89,45 @@ public sealed class JournalBookView : UserControl
         _exportPdfButton.Width = 100;
         _exportPdfButton.Click += async (_, _) => await ExportPdfAsync();
 
-        _previousMonthButton.Width = 90;
-        _previousMonthButton.Click += async (_, _) =>
+        _previousPeriodButton.Width = 90;
+        _previousPeriodButton.Click += async (_, _) =>
         {
-            if (_minimumMonth.HasValue && _targetMonth <= _minimumMonth.Value)
-            {
-                UpdateMonthNavigationState();
-                return;
-            }
-
-            _targetMonth = _targetMonth.AddMonths(-1);
+            MovePeriod(-1);
             await LoadAsync();
         };
 
-        var nextButton = ViewHelpers.SecondaryButton("次月");
+        var nextButton = ViewHelpers.SecondaryButton("次へ");
         nextButton.Width = 90;
         nextButton.Click += async (_, _) =>
         {
-            _targetMonth = _targetMonth.AddMonths(1);
+            MovePeriod(1);
             await LoadAsync();
         };
 
-        var currentButton = ViewHelpers.SecondaryButton("当月");
+        var currentButton = ViewHelpers.SecondaryButton("当期");
         currentButton.Width = 90;
         currentButton.Click += async (_, _) =>
         {
             _targetMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
-            if (_minimumMonth.HasValue && _targetMonth < _minimumMonth.Value)
-            {
-                _targetMonth = _minimumMonth.Value;
-            }
-
             await LoadAsync();
+        };
+
+        _monthModeButton.IsCheckedChanged += async (_, _) =>
+        {
+            if (_monthModeButton.IsChecked == true && _periodMode != PeriodMode.Month)
+            {
+                _periodMode = PeriodMode.Month;
+                await LoadAsync();
+            }
+        };
+
+        _fiscalYearModeButton.IsCheckedChanged += async (_, _) =>
+        {
+            if (_fiscalYearModeButton.IsChecked == true && _periodMode != PeriodMode.FiscalYear)
+            {
+                _periodMode = PeriodMode.FiscalYear;
+                await LoadAsync();
+            }
         };
 
         var searchButton = ViewHelpers.SecondaryButton("検索");
@@ -117,13 +138,20 @@ public sealed class JournalBookView : UserControl
         clearButton.Width = 110;
         clearButton.Click += (_, _) =>
         {
-            _entryNumberFilter.Text = "";
-            _keywordFilter.Text = "";
-            _debitAccountFilter.Text = "";
-            _creditAccountFilter.Text = "";
+            _partnerFilter.Text = "";
+            _accountFilter.Text = "";
             _minAmountFilter.Text = "";
             _maxAmountFilter.Text = "";
+            _referenceFilter.Text = "";
+            _descriptionFilter.Text = "";
             ApplyFilters();
+        };
+
+        _searchToggleButton.Width = 150;
+        _searchToggleButton.Click += (_, _) =>
+        {
+            _isSearchPanelVisible = !_isSearchPanelVisible;
+            UpdateSearchPanelState();
         };
 
         var header = new Grid
@@ -152,15 +180,28 @@ public sealed class JournalBookView : UserControl
         Grid.SetColumn(newButton, 7);
         Grid.SetColumn(backButton, 9);
 
-        var monthControls = new Grid
+        var periodModePanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 14,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                ViewHelpers.Label("表示単位"),
+                _monthModeButton,
+                _fiscalYearModeButton
+            }
+        };
+
+        var periodControls = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("Auto,10,Auto,10,Auto,24,Auto,20,*,20,Auto,100,16,Auto,100"),
             Children =
             {
-                _previousMonthButton,
+                _previousPeriodButton,
                 nextButton,
                 currentButton,
-                _monthLabel,
+                _periodLabel,
                 _message,
                 SummaryLabel("借方合計", 10),
                 SummaryBox(_debitTotal, 11),
@@ -170,36 +211,52 @@ public sealed class JournalBookView : UserControl
         };
         Grid.SetColumn(nextButton, 2);
         Grid.SetColumn(currentButton, 4);
-        Grid.SetColumn(_monthLabel, 6);
+        Grid.SetColumn(_periodLabel, 6);
         Grid.SetColumn(_message, 8);
 
-        var searchControls = new Grid
+        _searchControlsPanel.ColumnDefinitions = new ColumnDefinitions("180,12,240,12,120,12,120,12,160,12,240,12,100,12,110");
+        _searchControlsPanel.RowDefinitions = new RowDefinitions("Auto,Auto");
+        _searchControlsPanel.RowSpacing = 8;
+        _searchControlsPanel.Children.Clear();
+        _searchControlsPanel.Children.Add(SearchField("取引先", _partnerFilter, 0, 0));
+        _searchControlsPanel.Children.Add(SearchField("勘定科目", _accountFilter, 2, 0));
+        _searchControlsPanel.Children.Add(SearchField("金額下限", _minAmountFilter, 4, 0));
+        _searchControlsPanel.Children.Add(SearchField("金額上限", _maxAmountFilter, 6, 0));
+        _searchControlsPanel.Children.Add(SearchField("証憑番号", _referenceFilter, 8, 0));
+        _searchControlsPanel.Children.Add(SearchField("摘要キーワード", _descriptionFilter, 10, 0));
+        _searchControlsPanel.Children.Add(ButtonField(searchButton, 12, 0));
+        _searchControlsPanel.Children.Add(ButtonField(clearButton, 14, 0));
+
+        var searchSection = new StackPanel
         {
-            ColumnDefinitions = new ColumnDefinitions("170,12,240,12,180,12,180,12,110,12,110,12,100,12,110"),
-            RowDefinitions = new RowDefinitions("Auto,Auto"),
-            RowSpacing = 8,
+            Spacing = 8,
             Children =
             {
-                SearchField("仕訳番号", _entryNumberFilter, 0, 0),
-                SearchField("キーワード", _keywordFilter, 2, 0),
-                SearchField("借方科目", _debitAccountFilter, 4, 0),
-                SearchField("貸方科目", _creditAccountFilter, 6, 0),
-                SearchField("下限金額", _minAmountFilter, 8, 0),
-                SearchField("上限金額", _maxAmountFilter, 10, 0),
-                ButtonField(searchButton, 12, 0),
-                ButtonField(clearButton, 14, 0)
+                new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+                    Children =
+                    {
+                        _searchToggleButton
+                    }
+                },
+                _searchControlsPanel
             }
         };
+        _searchControlsPanel.IsVisible = false;
 
         var controls = ViewHelpers.Panel(new StackPanel
         {
             Spacing = 12,
             Children =
             {
-                monthControls,
-                searchControls
+                periodModePanel,
+                periodControls,
+                searchSection
             }
         });
+
+        UpdateSearchPanelState();
 
         var listScroll = new ScrollViewer { Content = _rows };
         Grid.SetRow(listScroll, 1);
@@ -230,28 +287,40 @@ public sealed class JournalBookView : UserControl
         return layout;
     }
 
+    private void UpdateSearchPanelState()
+    {
+        _searchControlsPanel.IsVisible = _isSearchPanelVisible;
+        var activeFilters = CountActiveFilters();
+        _searchToggleButton.Content = _isSearchPanelVisible
+            ? "検索機能を閉じる"
+            : activeFilters == 0
+                ? "検索機能を表示"
+                : $"検索機能を表示 ({activeFilters})";
+    }
+
     private async Task LoadAsync()
     {
         try
         {
             var settings = await _database.GetCompanySettingsAsync(_user.CompanyId);
+            _fiscalYearTemplate = settings.FiscalYearStart.Date;
             _minimumMonth = new DateTime(settings.FiscalYearStart.Year, settings.FiscalYearStart.Month, 1);
-            if (_targetMonth < _minimumMonth.Value)
+
+            if (_minimumMonth.HasValue && _targetMonth < _minimumMonth.Value)
             {
                 _targetMonth = _minimumMonth.Value;
             }
 
-            UpdateMonthNavigationState();
+            UpdatePeriodNavigationState();
 
-            _monthLabel.Text = $"{_targetMonth:yyyy年M月}";
-            var from = _targetMonth;
-            var to = _targetMonth.AddMonths(1);
-            _monthRows = await _database.GetJournalBookRowsAsync(_user.CompanyId, from, to);
+            var (from, to) = GetCurrentRange();
+            _periodLabel.Text = GetCurrentPeriodLabel();
+            _periodRows = await _database.GetJournalBookRowsAsync(_user.CompanyId, from, to);
             ApplyFilters();
         }
         catch (Exception ex)
         {
-            _monthRows = Array.Empty<JournalBookRow>();
+            _periodRows = Array.Empty<JournalBookRow>();
             _currentRows = Array.Empty<JournalBookRow>();
             _currentEntryNumbers = [];
             _rows.Children.Clear();
@@ -264,21 +333,21 @@ public sealed class JournalBookView : UserControl
     {
         try
         {
-            var minAmount = ParseAmount(_minAmountFilter.Text, "下限金額");
-            var maxAmount = ParseAmount(_maxAmountFilter.Text, "上限金額");
+            var minAmount = ParseAmount(_minAmountFilter.Text, "金額下限");
+            var maxAmount = ParseAmount(_maxAmountFilter.Text, "金額上限");
             if (minAmount.HasValue && maxAmount.HasValue && minAmount.Value > maxAmount.Value)
             {
-                throw new InvalidOperationException("下限金額は上限金額以下で入力してください。");
+                throw new InvalidOperationException("金額下限は金額上限以下で入力してください。");
             }
 
-            var entryNumberFilter = Normalize(_entryNumberFilter.Text);
-            var keywordFilter = Normalize(_keywordFilter.Text);
-            var debitAccountFilter = Normalize(_debitAccountFilter.Text);
-            var creditAccountFilter = Normalize(_creditAccountFilter.Text);
+            var partnerFilter = Normalize(_partnerFilter.Text);
+            var accountFilter = Normalize(_accountFilter.Text);
+            var referenceFilter = Normalize(_referenceFilter.Text);
+            var descriptionFilter = Normalize(_descriptionFilter.Text);
 
-            var filteredRows = _monthRows
+            var filteredRows = _periodRows
                 .GroupBy(x => x.EntryNumber, StringComparer.Ordinal)
-                .Where(group => MatchesFilters(group, entryNumberFilter, keywordFilter, debitAccountFilter, creditAccountFilter, minAmount, maxAmount))
+                .Where(group => MatchesFilters(group, partnerFilter, accountFilter, referenceFilter, descriptionFilter, minAmount, maxAmount))
                 .SelectMany(group => group)
                 .ToList();
 
@@ -288,6 +357,7 @@ public sealed class JournalBookView : UserControl
                 .ToHashSet(StringComparer.Ordinal);
 
             RenderRows();
+            UpdateSearchPanelState();
         }
         catch (Exception ex)
         {
@@ -298,6 +368,7 @@ public sealed class JournalBookView : UserControl
             _creditTotal.Text = "0";
             _message.Text = ex.Message;
             _message.Foreground = Brush.Parse("#B42318");
+            UpdateSearchPanelState();
         }
     }
 
@@ -305,9 +376,9 @@ public sealed class JournalBookView : UserControl
     {
         _rows.Children.Clear();
 
-        if (_monthRows.Count == 0)
+        if (_periodRows.Count == 0)
         {
-            _message.Text = "この月の仕訳はありません。";
+            _message.Text = $"{GetCurrentPeriodLabel()} の仕訳はありません。";
             _message.Foreground = Brush.Parse("#4A5568");
             _debitTotal.Text = "0";
             _creditTotal.Text = "0";
@@ -339,17 +410,17 @@ public sealed class JournalBookView : UserControl
         var voucherCount = _currentRows.Select(x => x.EntryNumber).Distinct(StringComparer.Ordinal).Count();
         var filterCount = CountActiveFilters();
         _message.Text = filterCount == 0
-            ? $"{voucherCount:N0} 件の仕訳を表示しています。"
-            : $"{voucherCount:N0} 件の仕訳を表示しています。検索条件: {filterCount} 件";
+            ? $"{voucherCount:N0}件の仕訳を表示しています。"
+            : $"{voucherCount:N0}件の仕訳を表示しています。検索条件: {filterCount}件";
         _message.Foreground = Brush.Parse("#4A5568");
     }
 
     private static bool MatchesFilters(
         IGrouping<string, JournalBookRow> voucher,
-        string? entryNumberFilter,
-        string? keywordFilter,
-        string? debitAccountFilter,
-        string? creditAccountFilter,
+        string? partnerFilter,
+        string? accountFilter,
+        string? referenceFilter,
+        string? descriptionFilter,
         decimal? minAmount,
         decimal? maxAmount)
     {
@@ -357,35 +428,28 @@ public sealed class JournalBookView : UserControl
         var firstRow = rows[0];
         var voucherAmount = rows.Sum(x => x.DebitAmount);
 
-        if (!string.IsNullOrWhiteSpace(entryNumberFilter) &&
-            !ContainsText(firstRow.EntryNumber, entryNumberFilter))
+        if (!string.IsNullOrWhiteSpace(partnerFilter) &&
+            !rows.Any(row => ContainsText(row.PartnerName, partnerFilter)))
         {
             return false;
         }
 
-        if (!string.IsNullOrWhiteSpace(keywordFilter))
-        {
-            var matchesKeyword = rows.Any(row =>
-                ContainsText(row.EntryNumber, keywordFilter) ||
-                ContainsText(row.Description, keywordFilter) ||
-                ContainsText(row.Reference, keywordFilter) ||
-                ContainsText(row.DebitAccountDisplay, keywordFilter) ||
-                ContainsText(row.CreditAccountDisplay, keywordFilter));
-
-            if (!matchesKeyword)
-            {
-                return false;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(debitAccountFilter) &&
-            !rows.Any(row => ContainsText(row.DebitAccountDisplay, debitAccountFilter)))
+        if (!string.IsNullOrWhiteSpace(accountFilter) &&
+            !rows.Any(row =>
+                ContainsText(row.DebitAccountDisplay, accountFilter) ||
+                ContainsText(row.CreditAccountDisplay, accountFilter)))
         {
             return false;
         }
 
-        if (!string.IsNullOrWhiteSpace(creditAccountFilter) &&
-            !rows.Any(row => ContainsText(row.CreditAccountDisplay, creditAccountFilter)))
+        if (!string.IsNullOrWhiteSpace(referenceFilter) &&
+            !ContainsText(firstRow.Reference, referenceFilter))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(descriptionFilter) &&
+            !rows.Any(row => ContainsText(row.Description, descriptionFilter)))
         {
             return false;
         }
@@ -424,7 +488,7 @@ public sealed class JournalBookView : UserControl
 
         if (!decimal.TryParse(text, NumberStyles.Number, CultureInfo.CurrentCulture, out var value) || value < 0)
         {
-            throw new InvalidOperationException($"{label}は 0 以上の数値で入力してください。");
+            throw new InvalidOperationException($"{label}は0以上の数値で入力してください。");
         }
 
         return value;
@@ -433,19 +497,11 @@ public sealed class JournalBookView : UserControl
     private int CountActiveFilters()
     {
         var count = 0;
-        if (!string.IsNullOrWhiteSpace(_entryNumberFilter.Text))
+        if (!string.IsNullOrWhiteSpace(_partnerFilter.Text))
         {
             count++;
         }
-        if (!string.IsNullOrWhiteSpace(_keywordFilter.Text))
-        {
-            count++;
-        }
-        if (!string.IsNullOrWhiteSpace(_debitAccountFilter.Text))
-        {
-            count++;
-        }
-        if (!string.IsNullOrWhiteSpace(_creditAccountFilter.Text))
+        if (!string.IsNullOrWhiteSpace(_accountFilter.Text))
         {
             count++;
         }
@@ -457,8 +513,88 @@ public sealed class JournalBookView : UserControl
         {
             count++;
         }
+        if (!string.IsNullOrWhiteSpace(_referenceFilter.Text))
+        {
+            count++;
+        }
+        if (!string.IsNullOrWhiteSpace(_descriptionFilter.Text))
+        {
+            count++;
+        }
 
         return count;
+    }
+
+    private void MovePeriod(int offset)
+    {
+        _targetMonth = _periodMode switch
+        {
+            PeriodMode.Month => _targetMonth.AddMonths(offset),
+            PeriodMode.FiscalYear => ShiftFiscalYearStart(GetFiscalYearStart(_targetMonth), offset),
+            _ => _targetMonth
+        };
+
+        if (_minimumMonth.HasValue && _targetMonth < _minimumMonth.Value)
+        {
+            _targetMonth = _minimumMonth.Value;
+        }
+    }
+
+    private (DateTime From, DateTime To) GetCurrentRange()
+    {
+        if (_periodMode == PeriodMode.Month)
+        {
+            var monthStart = new DateTime(_targetMonth.Year, _targetMonth.Month, 1);
+            return (monthStart, monthStart.AddMonths(1));
+        }
+
+        var fiscalYearStart = GetFiscalYearStart(_targetMonth);
+        return (fiscalYearStart, ShiftFiscalYearStart(fiscalYearStart, 1));
+    }
+
+    private string GetCurrentPeriodLabel()
+    {
+        var (from, to) = GetCurrentRange();
+        return _periodMode == PeriodMode.Month
+            ? $"{from:yyyy年M月}"
+            : $"{from:yyyy/MM/dd} - {to.AddDays(-1):yyyy/MM/dd}";
+    }
+
+    private DateTime GetFiscalYearStart(DateTime targetDate)
+    {
+        var year = targetDate.Month >= _fiscalYearTemplate.Month ? targetDate.Year : targetDate.Year - 1;
+        var day = Math.Min(_fiscalYearTemplate.Day, DateTime.DaysInMonth(year, _fiscalYearTemplate.Month));
+        var candidate = new DateTime(year, _fiscalYearTemplate.Month, day);
+        if (targetDate.Date < candidate)
+        {
+            year--;
+            day = Math.Min(_fiscalYearTemplate.Day, DateTime.DaysInMonth(year, _fiscalYearTemplate.Month));
+            candidate = new DateTime(year, _fiscalYearTemplate.Month, day);
+        }
+
+        return candidate;
+    }
+
+    private DateTime ShiftFiscalYearStart(DateTime currentFiscalYearStart, int years)
+    {
+        var year = currentFiscalYearStart.Year + years;
+        var day = Math.Min(_fiscalYearTemplate.Day, DateTime.DaysInMonth(year, _fiscalYearTemplate.Month));
+        return new DateTime(year, _fiscalYearTemplate.Month, day);
+    }
+
+    private void UpdatePeriodNavigationState()
+    {
+        var currentPeriodStart = _periodMode == PeriodMode.Month
+            ? new DateTime(_targetMonth.Year, _targetMonth.Month, 1)
+            : GetFiscalYearStart(_targetMonth);
+        var minimumPeriodStart = _minimumMonth.HasValue
+            ? _periodMode == PeriodMode.Month
+                ? _minimumMonth.Value
+                : GetFiscalYearStart(_minimumMonth.Value)
+            : (DateTime?)null;
+
+        _previousPeriodButton.IsEnabled = !minimumPeriodStart.HasValue || currentPeriodStart > minimumPeriodStart.Value;
+        _importCsvButton.IsEnabled = _periodMode == PeriodMode.Month;
     }
 
     private static Control SearchField(string label, Control input, int column, int row)
@@ -511,8 +647,8 @@ public sealed class JournalBookView : UserControl
                     HeaderCell("仕訳番号", 1),
                     HeaderCell("摘要", 2),
                     HeaderCell("証憑番号", 3),
-                    HeaderCell("借方科目", 4),
-                    HeaderCell("貸方科目", 5),
+                    HeaderCell("借方勘定科目", 4),
+                    HeaderCell("貸方勘定科目", 5),
                     HeaderCell("借方金額", 6),
                     HeaderCell("貸方金額", 7),
                     HeaderCell("操作", 8)
@@ -525,7 +661,7 @@ public sealed class JournalBookView : UserControl
     {
         var editButton = ViewHelpers.SecondaryButton("編集");
         editButton.Width = 70;
-        editButton.Click += (_, _) => _openJournalForm(rowData.EntryNumber, _targetMonth);
+        editButton.Click += (_, _) => _openJournalForm(rowData.EntryNumber, rowData.EntryDate);
 
         var deleteButton = CreateDeleteButton();
         deleteButton.Width = 70;
@@ -585,11 +721,6 @@ public sealed class JournalBookView : UserControl
         return description;
     }
 
-    private void UpdateMonthNavigationState()
-    {
-        _previousMonthButton.IsEnabled = !_minimumMonth.HasValue || _targetMonth > _minimumMonth.Value;
-    }
-
     private async Task ExportCsvAsync()
     {
         if (_currentRows.Count == 0)
@@ -611,7 +742,7 @@ public sealed class JournalBookView : UserControl
         var file = await storageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "仕訳帳CSVを保存",
-            SuggestedFileName = $"journal_{_targetMonth:yyyyMM}.csv",
+            SuggestedFileName = GetCsvFileName(),
             DefaultExtension = "csv",
             FileTypeChoices =
             [
@@ -632,7 +763,8 @@ public sealed class JournalBookView : UserControl
         try
         {
             _exportCsvButton.IsEnabled = false;
-            var rows = await _database.GetJournalCsvRowsAsync(_user.CompanyId, _targetMonth, _targetMonth.AddMonths(1));
+            var (from, to) = GetCurrentRange();
+            var rows = await _database.GetJournalCsvRowsAsync(_user.CompanyId, from, to);
             var filteredRows = rows
                 .Where(x => !string.IsNullOrWhiteSpace(x.EntryNumber) && _currentEntryNumbers.Contains(x.EntryNumber))
                 .ToList();
@@ -701,7 +833,7 @@ public sealed class JournalBookView : UserControl
         }
         finally
         {
-            _importCsvButton.IsEnabled = true;
+            UpdatePeriodNavigationState();
         }
     }
 
@@ -709,7 +841,7 @@ public sealed class JournalBookView : UserControl
     {
         if (_currentRows.Count == 0)
         {
-            _message.Text = "出力する仕訳データがありません。";
+            _message.Text = "PDF出力する仕訳データがありません。";
             _message.Foreground = Brush.Parse("#B42318");
             return;
         }
@@ -726,7 +858,7 @@ public sealed class JournalBookView : UserControl
         var file = await storageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "仕訳帳PDFを保存",
-            SuggestedFileName = $"仕訳帳_{_targetMonth:yyyyMM}.pdf",
+            SuggestedFileName = GetPdfFileName(),
             DefaultExtension = "pdf",
             FileTypeChoices =
             [
@@ -747,7 +879,7 @@ public sealed class JournalBookView : UserControl
         try
         {
             _exportPdfButton.IsEnabled = false;
-            var error = await JournalBookPdfExporter.ExportAsync(file.Path.LocalPath, _user.CompanyName, _targetMonth, _currentRows);
+            var error = await JournalBookPdfExporter.ExportAsync(file.Path.LocalPath, _user.CompanyName, GetCurrentPeriodLabel(), _currentRows);
             if (!string.IsNullOrWhiteSpace(error))
             {
                 _message.Text = error;
@@ -768,6 +900,22 @@ public sealed class JournalBookView : UserControl
         {
             _exportPdfButton.IsEnabled = true;
         }
+    }
+
+    private string GetCsvFileName()
+    {
+        var (from, _) = GetCurrentRange();
+        return _periodMode == PeriodMode.Month
+            ? $"journal_{from:yyyyMM}.csv"
+            : $"journal_fy_{from:yyyyMMdd}.csv";
+    }
+
+    private string GetPdfFileName()
+    {
+        var (from, _) = GetCurrentRange();
+        return _periodMode == PeriodMode.Month
+            ? $"仕訳帳_{from:yyyyMM}.pdf"
+            : $"仕訳帳_年度_{from:yyyyMMdd}.pdf";
     }
 
     private static ColumnDefinitions JournalColumns()
@@ -893,7 +1041,7 @@ public sealed class JournalBookView : UserControl
                 {
                     ViewHelpers.Heading("この仕訳を削除しますか", 22),
                     ViewHelpers.Body($"仕訳番号: {entryNumber}"),
-                    ViewHelpers.Body("削除するとその仕訳に含まれるすべての明細が削除され、元に戻せません。"),
+                    ViewHelpers.Body("削除すると、この仕訳に含まれるすべての明細が削除されます。元に戻せません。"),
                     buttons
                 }
             })

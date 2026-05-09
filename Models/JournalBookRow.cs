@@ -6,6 +6,7 @@ public sealed record JournalBookRow(
     string EntryNumber,
     string? Description,
     string? Reference,
+    string? PartnerName,
     string? DebitAccountDisplay,
     string? CreditAccountDisplay,
     decimal DebitAmount,

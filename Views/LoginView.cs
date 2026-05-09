@@ -85,9 +85,12 @@ public sealed class LoginView : UserControl
 
     private async Task CheckDatabaseAsync()
     {
-        SetMessage("SQLite 接続を確認しています。", false);
+        SetMessage("SQLite に接続しています。", false);
+        SetSetupButtons(showCreateAdmin: false, showInitSchema: false);
+
         if (!await _database.CanConnectAsync())
         {
+            SetSetupButtons(showCreateAdmin: false, showInitSchema: true);
             SetMessage("DBに接続できません。保存先や権限を確認してください。必要なら起動時の画面に戻って別のDBを選び直してください。", true);
             return;
         }
@@ -95,10 +98,12 @@ public sealed class LoginView : UserControl
         try
         {
             var hasUsers = await _database.HasUsersAsync();
+            SetSetupButtons(showCreateAdmin: !hasUsers, showInitSchema: false);
             SetMessage(hasUsers ? "接続できました。ログインできます。" : "接続できました。初期管理者を作成してください。", false);
         }
         catch
         {
+            SetSetupButtons(showCreateAdmin: false, showInitSchema: true);
             SetMessage("接続できました。テーブル未作成の場合は「DBスキーマを初期化」を押してください。", false);
         }
     }
@@ -108,6 +113,7 @@ public sealed class LoginView : UserControl
         await RunBusyAsync(_initSchemaButton, async () =>
         {
             await _database.InitializeSchemaAsync();
+            SetSetupButtons(showCreateAdmin: true, showInitSchema: false);
             SetMessage("DBスキーマを初期化しました。初期管理者を作成できます。", false);
         });
     }
@@ -135,7 +141,11 @@ public sealed class LoginView : UserControl
 
     private void ShowCreateAdmin()
     {
-        Content = new CreateAdminView(_database, _signedIn, () => Content = Build());
+        Content = new CreateAdminView(_database, _signedIn, () =>
+        {
+            Content = Build();
+            _ = CheckDatabaseAsync();
+        });
     }
 
     private void ApplySetupButtonSize(Button button)
@@ -147,6 +157,12 @@ public sealed class LoginView : UserControl
 
         button.Width = CompactSetupButtonWidth;
         button.HorizontalAlignment = HorizontalAlignment.Left;
+    }
+
+    private void SetSetupButtons(bool showCreateAdmin, bool showInitSchema)
+    {
+        _createAdminButton.IsVisible = showCreateAdmin;
+        _initSchemaButton.IsVisible = showInitSchema;
     }
 
     private async Task RunBusyAsync(Button button, Func<Task> action)

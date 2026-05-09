@@ -128,14 +128,14 @@ public sealed class DashboardView : UserControl
                 CreateMenuButton("試算表", false, _ => _openTrialBalance()),
                 CreateMenuButton("貸借対照表", false, _ => _openBalanceSheet()),
                 CreateMenuButton("損益計算書", false, _ => _openProfitAndLoss()),
-                CreateMenuButton("消費税集計", false, _ => _openTaxSummary())
+                CreateMenuButton("消費税集計表", false, _ => _openTaxSummary())
             ]);
 
         var managementPanel = string.Equals(_user.Role, "admin", StringComparison.OrdinalIgnoreCase)
             ? CreateSectionPanel(
                 "管理",
                 [
-                    CreateMenuButton("会社設定", false, _ => _openCompanySettings()),
+                    CreateMenuButton("会社管理", false, _ => _openCompanySettings()),
                     CreateMenuButton("勘定科目", false, _ => _openAccountForm()),
                     CreateMenuButton("補助科目", false, _ => _openSubAccountForm()),
                     CreateMenuButton("取引先", false, _ => _openBusinessPartnerForm()),
@@ -173,27 +173,6 @@ public sealed class DashboardView : UserControl
             Child = _message
         };
 
-        var footerBar = new Grid
-        {
-            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-            ColumnSpacing = 12,
-            Children =
-            {
-                messageBar
-            }
-        };
-
-        if (string.Equals(_user.Role, "admin", StringComparison.OrdinalIgnoreCase))
-        {
-            var clearAllButton = CreateDangerButton("ALL CLEAR", button => ConfirmAndClearAllAsync(button));
-            clearAllButton.Width = 120;
-            clearAllButton.HorizontalAlignment = HorizontalAlignment.Right;
-            clearAllButton.VerticalAlignment = VerticalAlignment.Bottom;
-            clearAllButton.Opacity = 0.76;
-            Grid.SetColumn(clearAllButton, 1);
-            footerBar.Children.Add(clearAllButton);
-        }
-
         var body = new StackPanel
         {
             Spacing = 14,
@@ -202,7 +181,7 @@ public sealed class DashboardView : UserControl
                 header,
                 summaryPanel,
                 sectionGrid,
-                footerBar
+                messageBar
             }
         };
 
@@ -252,17 +231,6 @@ public sealed class DashboardView : UserControl
         button.Height = 40;
         button.HorizontalAlignment = HorizontalAlignment.Stretch;
         button.Click += (_, _) => onClick(button);
-        return button;
-    }
-
-    private static Button CreateDangerButton(string title, Func<Button, Task> onClick)
-    {
-        var button = ViewHelpers.SecondaryButton(title);
-        button.Height = 32;
-        button.Background = Brush.Parse("#B42318");
-        button.Foreground = Brushes.White;
-        button.HorizontalAlignment = HorizontalAlignment.Stretch;
-        button.Click += async (_, _) => await onClick(button);
         return button;
     }
 
@@ -320,94 +288,5 @@ public sealed class DashboardView : UserControl
                 }
             }
         };
-    }
-
-    private async Task ConfirmAndClearAllAsync(Button clearAllButton)
-    {
-        var owner = TopLevel.GetTopLevel(this) as Window;
-        if (owner is null)
-        {
-            _message.Text = "確認ダイアログを表示できませんでした。";
-            _message.Foreground = Brush.Parse("#B42318");
-            return;
-        }
-
-        var confirmation = new TextBox
-        {
-            Width = 220,
-            PlaceholderText = "CLEAR と入力"
-        };
-
-        var warning = new StackPanel
-        {
-            Spacing = 10,
-            Children =
-            {
-                ViewHelpers.Heading("ALL CLEAR を実行します", 22),
-                ViewHelpers.Body("ユーザー、勘定科目、補助科目、取引先、仕訳をすべて削除します。"),
-                ViewHelpers.Body("実行後はログイン画面に戻ります。実行する場合は CLEAR と入力してください。"),
-                confirmation
-            }
-        };
-
-        var executeButton = ViewHelpers.PrimaryButton("実行する");
-        executeButton.Width = 120;
-        var cancelButton = ViewHelpers.SecondaryButton("キャンセル");
-        cancelButton.Width = 120;
-
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 12,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Children = { executeButton, cancelButton }
-        };
-
-        var dialog = new Window
-        {
-            Title = "ALL CLEAR 確認",
-            Width = 520,
-            Height = 260,
-            CanResize = false,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Content = CreatePanel(new StackPanel
-            {
-                Margin = new Thickness(20),
-                Spacing = 18,
-                Children = { warning, buttons }
-            })
-        };
-
-        executeButton.Click += (_, _) => dialog.Close(true);
-        cancelButton.Click += (_, _) => dialog.Close(false);
-
-        var confirmed = await dialog.ShowDialog<bool>(owner);
-        if (!confirmed)
-        {
-            return;
-        }
-
-        if (!string.Equals(confirmation.Text?.Trim(), "CLEAR", StringComparison.Ordinal))
-        {
-            _message.Text = "確認キーワードが一致しなかったため、中止しました。";
-            _message.Foreground = Brush.Parse("#B42318");
-            return;
-        }
-
-        try
-        {
-            clearAllButton.IsEnabled = false;
-            await _database.ClearAllDataAsync();
-            _signOut();
-        }
-        catch (Exception ex)
-        {
-            _message.Text = ex.Message;
-            _message.Foreground = Brush.Parse("#B42318");
-        }
-        finally
-        {
-            clearAllButton.IsEnabled = true;
-        }
     }
 }

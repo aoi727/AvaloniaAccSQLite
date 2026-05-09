@@ -22,16 +22,16 @@ public static class JournalBookPdfExporter
     public static Task<string?> ExportAsync(
         string outputPath,
         string companyName,
-        DateTime targetMonth,
+        string periodLabel,
         IReadOnlyList<JournalBookRow> rows)
     {
-        return Task.Run(() => ExportCore(outputPath, companyName, targetMonth, rows));
+        return Task.Run(() => ExportCore(outputPath, companyName, periodLabel, rows));
     }
 
     private static string? ExportCore(
         string outputPath,
         string companyName,
-        DateTime targetMonth,
+        string periodLabel,
         IReadOnlyList<JournalBookRow> rows)
     {
         try
@@ -57,7 +57,7 @@ public static class JournalBookPdfExporter
                 using var canvas = document.BeginPage(PageWidth, PageHeight);
                 canvas.Clear(SKColors.White);
 
-                DrawHeader(canvas, typeface, companyName, targetMonth, pageIndex + 1, pageCount);
+                DrawHeader(canvas, typeface, companyName, periodLabel, pageIndex + 1, pageCount);
                 DrawTableHeader(canvas, typeface, columns, totalWidth);
 
                 var pageRows = rows.Skip(pageIndex * rowsPerPage).Take(rowsPerPage).ToList();
@@ -80,7 +80,7 @@ public static class JournalBookPdfExporter
         }
     }
 
-    private static void DrawHeader(SKCanvas canvas, SKTypeface typeface, string companyName, DateTime targetMonth, int pageNumber, int pageCount)
+    private static void DrawHeader(SKCanvas canvas, SKTypeface typeface, string companyName, string periodLabel, int pageNumber, int pageCount)
     {
         using var titlePaint = new SKPaint { Color = SKColors.Black, IsAntialias = true };
         using var bodyPaint = new SKPaint { Color = SKColors.Black, IsAntialias = true };
@@ -89,7 +89,7 @@ public static class JournalBookPdfExporter
 
         canvas.DrawText("仕訳帳", PageWidth / 2, 36f, SKTextAlign.Center, titleFont, titlePaint);
         canvas.DrawText(companyName, Margin, 58f, SKTextAlign.Left, bodyFont, bodyPaint);
-        canvas.DrawText($"{targetMonth:yyyy年M月分}", PageWidth / 2, 58f, SKTextAlign.Center, bodyFont, bodyPaint);
+        canvas.DrawText(periodLabel, PageWidth / 2, 58f, SKTextAlign.Center, bodyFont, bodyPaint);
         canvas.DrawText($"ページ {pageNumber}/{pageCount}", PageWidth - Margin, 58f, SKTextAlign.Right, bodyFont, bodyPaint);
     }
 
@@ -111,7 +111,7 @@ public static class JournalBookPdfExporter
             canvas.DrawLine(runningX, top, runningX, bottom, borderPaint);
         }
 
-        var labels = new[] { "日付", "伝票番号", "摘要", "参照", "借方科目", "貸方科目", "借方金額", "貸方金額" };
+        var labels = new[] { "日付", "仕訳番号", "摘要", "証憑番号", "借方勘定科目", "貸方勘定科目", "借方金額", "貸方金額" };
         runningX = left;
         for (var i = 0; i < columns.Count; i++)
         {
@@ -266,7 +266,7 @@ public static class JournalBookPdfExporter
             length--;
         }
 
-        return ellipsis;
+        return string.Empty;
     }
 
     private static string ResolveDescriptionText(string? description, bool isVoucherStart, string? previousDescription)
@@ -283,5 +283,4 @@ public static class JournalBookPdfExporter
 
         return description;
     }
-
 }

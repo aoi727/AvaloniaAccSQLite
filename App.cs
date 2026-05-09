@@ -28,10 +28,12 @@ public sealed class App : Application
             var startupWindow = new DatabaseStartupWindow((database, openedFromNewDatabase) =>
             {
                 var mainWindow = new MainWindow(database, openedFromNewDatabase);
+                mainWindow.Icon = AppIconProvider.CreateWindowIcon();
                 desktop.MainWindow = mainWindow;
                 mainWindow.Show();
             });
 
+            startupWindow.Icon = AppIconProvider.CreateWindowIcon();
             desktop.MainWindow = startupWindow;
         }
 

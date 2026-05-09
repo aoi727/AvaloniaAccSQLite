@@ -39,6 +39,7 @@ public sealed partial class SqliteDatabase
             string? reference,
             int createdBy,
             IReadOnlyList<JournalLineInput> lines,
+            IReadOnlyList<JournalVoucherAttachment>? attachments = null,
             string? originalEntryNumber = null)
     {
         ValidateEntryNumber(entryNumber);
@@ -51,6 +52,7 @@ public sealed partial class SqliteDatabase
 
         try
         {
+            await EnsureJournalAttachmentSchemaAsync(connection, transaction);
             var normalizedEntryNumber = entryNumber.Trim();
             var normalizedOriginalEntryNumber = string.IsNullOrWhiteSpace(originalEntryNumber)
                 ? normalizedEntryNumber
@@ -104,6 +106,14 @@ public sealed partial class SqliteDatabase
                     companyId,
                     lineNo++,
                     line);
+            }
+
+            if (attachments is not null)
+            {
+                foreach (var attachment in attachments)
+                {
+                    await InsertJournalAttachmentAsync(connection, transaction, voucherId, companyId, attachment);
+                }
             }
 
             await EnsureOperationLogSchemaAsync(connection, transaction);
@@ -264,6 +274,40 @@ public sealed partial class SqliteDatabase
         }
     }
 
+    public async Task<IReadOnlyList<JournalVoucherAttachment>> GetJournalVoucherAttachmentsAsync(int companyId, string entryNumber)
+    {
+        const string sql = @"
+    SELECT a.attachment_id,
+           a.file_name,
+           a.content_type,
+           a.content
+    FROM journal_voucher_attachments a
+    JOIN journal_vouchers v ON v.voucher_id = a.voucher_id
+    WHERE v.company_id = @company_id
+      AND v.entry_number = @entry_number
+    ORDER BY a.attachment_id";
+
+        var attachments = new List<JournalVoucherAttachment>();
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync();
+        await EnsureJournalAttachmentSchemaAsync(connection, null);
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("company_id", companyId);
+        command.Parameters.AddWithValue("entry_number", entryNumber.Trim());
+
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            attachments.Add(new JournalVoucherAttachment(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                (byte[])reader["content"]));
+        }
+
+        return attachments;
+    }
+
     public async Task<IReadOnlyList<JournalVoucherSummary>> GetJournalVoucherSummariesAsync(int companyId)
     {
         return await GetJournalVoucherSummariesAsync(companyId, null, null);
@@ -277,6 +321,7 @@ public sealed partial class SqliteDatabase
            v.entry_number,
            l.description,
            v.reference,
+           p.name AS partner_name,
            CASE
                WHEN l.side = 'debit' THEN
                    a.code || ' ' || a.name ||
@@ -301,6 +346,7 @@ public sealed partial class SqliteDatabase
     JOIN journal_lines l ON l.voucher_id = v.voucher_id
     JOIN accounts a ON a.account_id = l.account_id
     LEFT JOIN sub_accounts s ON s.sub_account_id = NULLIF(l.sub_account_id, 0)
+    LEFT JOIN business_partners p ON p.partner_id = l.partner_id
     WHERE v.company_id = @company_id
       AND (@from_date IS NULL OR v.entry_date >= @from_date)
       AND (@to_date IS NULL OR v.entry_date < @to_date)
@@ -325,8 +371,9 @@ public sealed partial class SqliteDatabase
                 reader.IsDBNull(4) ? null : reader.GetString(4),
                 reader.IsDBNull(5) ? null : reader.GetString(5),
                 reader.IsDBNull(6) ? null : reader.GetString(6),
-                reader.GetDecimal(7),
-                reader.GetDecimal(8)));
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.GetDecimal(8),
+                reader.GetDecimal(9)));
         }
 
         return rows;
@@ -1294,6 +1341,49 @@ public sealed partial class SqliteDatabase
         command.Parameters.AddWithValue("invoice_registration_number", (object?)(string.IsNullOrWhiteSpace(line.InvoiceRegistrationNumber) ? null : line.InvoiceRegistrationNumber.Trim()) ?? DBNull.Value);
         command.Parameters.AddWithValue("invoice_status", (object?)(string.IsNullOrWhiteSpace(line.InvoiceStatus) ? null : line.InvoiceStatus) ?? DBNull.Value);
         command.Parameters.AddWithValue("purchase_credit_rate", (object?)(line.PurchaseCreditRate) ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task InsertJournalAttachmentAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long voucherId,
+        int companyId,
+        JournalVoucherAttachment attachment)
+    {
+        const string sql = @"
+    INSERT INTO journal_voucher_attachments (
+        voucher_id, company_id, file_name, content_type, content
+    )
+    VALUES (
+        @voucher_id, @company_id, @file_name, @content_type, @content
+    )";
+
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("voucher_id", voucherId);
+        command.Parameters.AddWithValue("company_id", companyId);
+        command.Parameters.AddWithValue("file_name", attachment.FileName.Trim());
+        command.Parameters.AddWithValue("content_type", (object?)attachment.ContentType ?? DBNull.Value);
+        command.Parameters.Add("content", SqliteType.Blob).Value = attachment.Content;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task EnsureJournalAttachmentSchemaAsync(SqliteConnection connection, SqliteTransaction? transaction)
+    {
+        const string sql = @"
+    CREATE TABLE IF NOT EXISTS journal_voucher_attachments (
+        attachment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        voucher_id    INTEGER NOT NULL REFERENCES journal_vouchers(voucher_id) ON DELETE CASCADE,
+        company_id    INTEGER NOT NULL REFERENCES companies(company_id),
+        file_name     VARCHAR(255) NOT NULL,
+        content_type  VARCHAR(100),
+        content       BLOB NOT NULL,
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_journal_voucher_attachments_voucher
+        ON journal_voucher_attachments(voucher_id);";
+
+        await using var command = new SqliteCommand(sql, connection, transaction);
         await command.ExecuteNonQueryAsync();
     }
 

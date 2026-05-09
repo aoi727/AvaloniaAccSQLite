@@ -178,6 +178,16 @@ CREATE TABLE IF NOT EXISTS journal_lines (
     CHECK (side IN ('debit','credit'))
 );
 
+CREATE TABLE IF NOT EXISTS journal_voucher_attachments (
+    attachment_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    voucher_id           INTEGER NOT NULL REFERENCES journal_vouchers(voucher_id) ON DELETE CASCADE,
+    company_id           INTEGER NOT NULL REFERENCES companies(company_id),
+    file_name            VARCHAR(255) NOT NULL,
+    content_type         VARCHAR(100),
+    content              BLOB NOT NULL,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS sub_account_balances (
     balance_id          INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id          INTEGER NOT NULL REFERENCES companies(company_id),
@@ -299,6 +309,7 @@ CREATE INDEX IF NOT EXISTS idx_journal_vouchers_company_number ON journal_vouche
 CREATE INDEX IF NOT EXISTS idx_journal_lines_voucher ON journal_lines(voucher_id, line_no);
 CREATE INDEX IF NOT EXISTS idx_journal_lines_company_account ON journal_lines(company_id, account_id, sub_account_id);
 CREATE INDEX IF NOT EXISTS idx_journal_lines_company_partner ON journal_lines(company_id, partner_id);
+CREATE INDEX IF NOT EXISTS idx_journal_voucher_attachments_voucher ON journal_voucher_attachments(voucher_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_company_active ON accounts(company_id, is_active, code);
 CREATE INDEX IF NOT EXISTS idx_sub_account_balances_company_period ON sub_account_balances(company_id, fiscal_year, month);
 CREATE INDEX IF NOT EXISTS idx_annual_carry_forwards_company_start ON annual_carry_forwards(company_id, next_fiscal_year_start);

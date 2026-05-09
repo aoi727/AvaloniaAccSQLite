@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app-icon.ico</ApplicationIcon>
     <StartupObject>AccountingApp.Program</StartupObject>
 
     <!-- Release時のサイズ最適化設定（ここがメイン） -->
@@ -39,10 +40,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <AvaloniaResource Include="Assets\app-icon.png" />
     <AvaloniaResource Include="Styles\AppStyles.axaml" />
     <None Include="Database\schema.sql" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Database\seed_accounts.csv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Database\seed_accounts_subaccounts_from_csv.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Assets\app-icon.ico" />
     <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('appsettings.json')" />
   </ItemGroup>
 
