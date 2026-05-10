@@ -25,6 +25,7 @@ public sealed class DashboardView : UserControl
     private readonly Action _openBalanceSheet;
     private readonly Action _openProfitAndLoss;
     private readonly Action _openTaxSummary;
+    private readonly Action _openBudgetForecast;
     private readonly Action _openCompanySettings;
     private readonly Action _openOperationLogs;
     private readonly WrapPanel _summary = new()
@@ -52,6 +53,7 @@ public sealed class DashboardView : UserControl
         Action openBalanceSheet,
         Action openProfitAndLoss,
         Action openTaxSummary,
+        Action openBudgetForecast,
         Action openCompanySettings,
         Action openOperationLogs)
     {
@@ -71,6 +73,7 @@ public sealed class DashboardView : UserControl
         _openBalanceSheet = openBalanceSheet;
         _openProfitAndLoss = openProfitAndLoss;
         _openTaxSummary = openTaxSummary;
+        _openBudgetForecast = openBudgetForecast;
         _openCompanySettings = openCompanySettings;
         _openOperationLogs = openOperationLogs;
         Content = Build();
@@ -128,7 +131,8 @@ public sealed class DashboardView : UserControl
                 CreateMenuButton("試算表", false, _ => _openTrialBalance()),
                 CreateMenuButton("貸借対照表", false, _ => _openBalanceSheet()),
                 CreateMenuButton("損益計算書", false, _ => _openProfitAndLoss()),
-                CreateMenuButton("消費税集計表", false, _ => _openTaxSummary())
+                CreateMenuButton("消費税集計表", false, _ => _openTaxSummary()),
+                CreateMenuButton("予算実績 / 資金繰り見込", false, _ => _openBudgetForecast())
             ]);
 
         var managementPanel = string.Equals(_user.Role, "admin", StringComparison.OrdinalIgnoreCase)

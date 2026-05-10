@@ -114,7 +114,7 @@ public sealed class MainWindow : Window
     private void ShowDashboard(AppUser user)
     {
         _currentUser = user;
-        SetContent(new DashboardView(_database, user, ShowLogin, () => ShowSubAccountForm(), ShowAccountForm, ShowBusinessPartnerForm, ShowUserForm, ShowJournalForm, ShowJournalBook, ShowCashbook, ShowGeneralLedger, ShowBusinessPartnerTransactions, ShowTrialBalance, ShowBalanceSheet, ShowProfitAndLoss, ShowTaxSummary, ShowCompanySettings, ShowOperationLogs));
+        SetContent(new DashboardView(_database, user, ShowLogin, () => ShowSubAccountForm(), ShowAccountForm, ShowBusinessPartnerForm, ShowUserForm, ShowJournalForm, ShowJournalBook, ShowCashbook, ShowGeneralLedger, ShowBusinessPartnerTransactions, ShowTrialBalance, ShowBalanceSheet, ShowProfitAndLoss, ShowTaxSummary, ShowBudgetForecast, ShowCompanySettings, ShowOperationLogs));
     }
 
     private void ShowSubAccountForm(int? accountId = null, bool returnToAccountForm = false)
@@ -283,6 +283,17 @@ public sealed class MainWindow : Window
         }
 
         SetContent(new TaxSummaryView(_database, _currentUser, () => ShowDashboard(_currentUser)));
+    }
+
+    private void ShowBudgetForecast()
+    {
+        if (_currentUser is null)
+        {
+            ShowLogin();
+            return;
+        }
+
+        SetContent(new BudgetForecastView(_database, _currentUser, () => ShowDashboard(_currentUser)));
     }
 
     private void ShowCompanySettings()

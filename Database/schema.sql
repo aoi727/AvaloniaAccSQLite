@@ -250,6 +250,21 @@ CREATE TABLE IF NOT EXISTS monthly_locks (
     CHECK (status IN ('open','closed'))
 );
 
+CREATE TABLE IF NOT EXISTS monthly_budget_plans (
+    budget_plan_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id         INTEGER NOT NULL REFERENCES companies(company_id),
+    fiscal_year_start  DATE NOT NULL,
+    month_start        DATE NOT NULL,
+    sales_budget       NUMERIC(15,2) NOT NULL DEFAULT 0,
+    expense_budget     NUMERIC(15,2) NOT NULL DEFAULT 0,
+    expected_cash_in   NUMERIC(15,2) NOT NULL DEFAULT 0,
+    expected_cash_out  NUMERIC(15,2) NOT NULL DEFAULT 0,
+    note               TEXT,
+    created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(company_id, fiscal_year_start, month_start)
+);
+
 CREATE TABLE IF NOT EXISTS operation_logs (
     log_id              INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id          INTEGER NOT NULL REFERENCES companies(company_id),
@@ -317,6 +332,7 @@ CREATE INDEX IF NOT EXISTS idx_annual_closings_company_year ON annual_closings(c
 CREATE INDEX IF NOT EXISTS idx_annual_closings_company_status ON annual_closings(company_id, status);
 CREATE INDEX IF NOT EXISTS idx_monthly_locks_company_period ON monthly_locks(company_id, period_start, period_end);
 CREATE INDEX IF NOT EXISTS idx_monthly_locks_company_status ON monthly_locks(company_id, status);
+CREATE INDEX IF NOT EXISTS idx_monthly_budget_plans_company_year ON monthly_budget_plans(company_id, fiscal_year_start, month_start);
 CREATE INDEX IF NOT EXISTS idx_journal_vouchers_company_source ON journal_vouchers(company_id, source_type, source_key);
 CREATE INDEX IF NOT EXISTS idx_operation_logs_company_time ON operation_logs(company_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_operation_logs_company_target ON operation_logs(company_id, target_type, target_key);

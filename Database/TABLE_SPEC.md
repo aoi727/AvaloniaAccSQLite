@@ -251,7 +251,26 @@
 | `created_at` | TIMESTAMP |  | 作成日時。 |
 | `updated_at` | TIMESTAMP |  | 更新日時。 |
 
-## 7. 操作ログ
+## 7. 予算・資金繰り
+
+### `monthly_budget_plans`
+予算実績 / 資金繰り見込画面で入力した月別計画を保持します。
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---:|---|
+| `budget_plan_id` | INTEGER | ○ | 月別計画ID。主キー。 |
+| `company_id` | INTEGER | ○ | 会社ID。 |
+| `fiscal_year_start` | DATE | ○ | 対象年度開始日。 |
+| `month_start` | DATE | ○ | 対象月開始日。 |
+| `sales_budget` | NUMERIC(15,2) | ○ | 売上予算。 |
+| `expense_budget` | NUMERIC(15,2) | ○ | 支出予算。 |
+| `expected_cash_in` | NUMERIC(15,2) | ○ | 入金見込。 |
+| `expected_cash_out` | NUMERIC(15,2) | ○ | 出金見込。 |
+| `note` | TEXT |  | メモ。 |
+| `created_at` | TIMESTAMP |  | 作成日時。 |
+| `updated_at` | TIMESTAMP |  | 更新日時。 |
+
+## 8. 操作ログ
 
 ### `operation_logs`
 主要な操作履歴を監査用に保持します。
@@ -268,16 +287,17 @@
 | `metadata_json` | TEXT |  | 追加情報JSON。 |
 | `occurred_at` | TIMESTAMP |  | 発生日時。 |
 
-## 8. 主な関連
+## 9. 主な関連
 
 - `companies` 1 : N `accounts`, `sub_accounts`, `tax_codes`, `business_partners`, `journal_vouchers`
 - `accounts` 1 : N `sub_accounts`
 - `journal_vouchers` 1 : N `journal_lines`
 - `sub_accounts` 1 : N `sub_account_balances`
+- `companies` 1 : N `monthly_budget_plans`
 - `users` と `companies` は `user_companies` で関連付け
 - 年次処理は `annual_closings` と `annual_carry_forwards` で管理
 
-## 9. 補足
+## 10. 補足
 
 - SQLite 版は `companies` に単一行制約のトリガーがあります。
 - 初期勘定科目は `Database/seed_accounts.csv` または初期設定で選んだCSVから投入します。

@@ -167,6 +167,7 @@ public sealed class OperationLogView : UserControl
             "journal_delete" => "仕訳削除",
             "journal_template_save" => "定型保存",
             "journal_template_delete" => "定型削除",
+            "budget_forecast_save" => "予算保存",
             "annual_close" => "年度締め",
             "annual_unlock" => "締め解除",
             "monthly_lock" => "月次ロック",
