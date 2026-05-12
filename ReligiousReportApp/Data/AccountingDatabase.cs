@@ -450,8 +450,17 @@ public sealed class AccountingDatabase
     public async Task SavePeriodReviewStatusAsync(int companyId, DateTime periodStart, DateTime periodEnd, string status, string? note = null)
     {
         const string sql = @"
-    INSERT INTO religious_report_period_reviews (company_id, period_start, period_end, status, note, reviewed_at, updated_at)
-    VALUES (@company_id, @period_start, @period_end, @status, @note, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    INSERT INTO religious_report_period_reviews (company_id, period_start, period_end, status, note, reviewed_at, finalized_at, updated_at)
+    VALUES (
+        @company_id,
+        @period_start,
+        @period_end,
+        @status,
+        @note,
+        CURRENT_TIMESTAMP,
+        CASE WHEN @status = 'finalized' THEN CURRENT_TIMESTAMP ELSE NULL END,
+        CURRENT_TIMESTAMP
+    )
     ON CONFLICT(company_id, period_start, period_end)
     DO UPDATE SET
         status = excluded.status,
@@ -470,6 +479,29 @@ public sealed class AccountingDatabase
         command.Parameters.AddWithValue("status", status);
         command.Parameters.AddWithValue("note", string.IsNullOrWhiteSpace(note) ? DBNull.Value : note.Trim());
         await command.ExecuteNonQueryAsync();
+    }
+
+    public async Task<bool> UnfinalizePeriodReviewAsync(int companyId, DateTime periodStart, DateTime periodEnd)
+    {
+        const string sql = @"
+    UPDATE religious_report_period_reviews
+    SET status = 'reviewed',
+        reviewed_at = COALESCE(reviewed_at, CURRENT_TIMESTAMP),
+        finalized_at = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE company_id = @company_id
+      AND period_start = @period_start
+      AND period_end = @period_end
+      AND status = 'finalized'";
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync();
+        await EnsureSchemaAsync(connection);
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("company_id", companyId);
+        command.Parameters.AddWithValue("period_start", periodStart.Date);
+        command.Parameters.AddWithValue("period_end", periodEnd.Date);
+        return await command.ExecuteNonQueryAsync() > 0;
     }
 
     public async Task<string> GetReportNoteAsync(int companyId, DateTime periodStart, DateTime periodEnd)

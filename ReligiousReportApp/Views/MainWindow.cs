@@ -179,6 +179,8 @@ public sealed class MainWindow : Window
         reviewedButton.Click += async (_, _) => await MarkReviewedAsync();
         var finalizeButton = ViewHelpers.SecondaryButton("確定する");
         finalizeButton.Click += async (_, _) => await FinalizePeriodAsync();
+        var unfinalizeButton = ViewHelpers.SecondaryButton("確定解除");
+        unfinalizeButton.Click += async (_, _) => await UnfinalizePeriodAsync();
         var top = ViewHelpers.Panel(new WrapPanel
         {
             Children =
@@ -189,6 +191,7 @@ public sealed class MainWindow : Window
                 WithMargin(ButtonField(saveButton), new Thickness(12, 0, 0, 0)),
                 WithMargin(ButtonField(reviewedButton), new Thickness(12, 0, 0, 0)),
                 WithMargin(ButtonField(finalizeButton), new Thickness(12, 0, 0, 0)),
+                WithMargin(ButtonField(unfinalizeButton), new Thickness(12, 0, 0, 0)),
                 WithMargin(_reviewStatus, new Thickness(18, 30, 0, 0))
             }
         });
@@ -536,6 +539,87 @@ public sealed class MainWindow : Window
         await LoadReviewAsync();
         await LoadReportAsync();
         SetMessage("この期間を確定しました。以後、レビュー結果の変更はできません。", false);
+    }
+
+    private async Task UnfinalizePeriodAsync()
+    {
+        if (_database is null || _company is null) { SetError("先にDBを開いてください。"); return; }
+
+        var (start, end) = GetPeriod();
+        var status = await _database.GetPeriodReviewStatusAsync(_company.CompanyId, start, end);
+        if (status?.Status != "finalized")
+        {
+            SetError("この期間は確定済みではありません。");
+            return;
+        }
+
+        if (!await ConfirmUnfinalizeAsync(start, end))
+        {
+            SetMessage("確定解除を中止しました。", false);
+            return;
+        }
+
+        var changed = await _database.UnfinalizePeriodReviewAsync(_company.CompanyId, start, end);
+        if (!changed)
+        {
+            SetError("確定解除できませんでした。期間の状態を再読み込みしてください。");
+            return;
+        }
+
+        await LoadReviewAsync();
+        await LoadReportAsync();
+        SetMessage("この期間の確定を解除し、確認済みに戻しました。レビュー結果を変更できます。", false);
+    }
+
+    private async Task<bool> ConfirmUnfinalizeAsync(DateTime start, DateTime end)
+    {
+        var owner = TopLevel.GetTopLevel(this) as Window;
+        if (owner is null)
+        {
+            SetError("確認ダイアログを表示できませんでした。");
+            return false;
+        }
+
+        var cancelButton = ViewHelpers.SecondaryButton("キャンセル");
+        var okButton = ViewHelpers.PrimaryButton("確定解除する");
+        var dialog = new Window
+        {
+            Title = "確定解除の確認",
+            Width = 430,
+            Height = 230,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Content = new Border
+            {
+                Background = Brushes.White,
+                Padding = new Thickness(22),
+                Child = new StackPanel
+                {
+                    Spacing = 14,
+                    Children =
+                    {
+                        ViewHelpers.Heading("確定を解除しますか", 18),
+                        new TextBlock
+                        {
+                            Text = $"{start:yyyy/MM/dd} - {end:yyyy/MM/dd} の期間を確認済みに戻します。レビュー結果の編集が再び可能になります。",
+                            TextWrapping = TextWrapping.Wrap,
+                            Foreground = Brush.Parse("#243044")
+                        },
+                        new StackPanel
+                        {
+                            Orientation = Orientation.Horizontal,
+                            HorizontalAlignment = HorizontalAlignment.Right,
+                            Spacing = 10,
+                            Children = { cancelButton, okButton }
+                        }
+                    }
+                }
+            }
+        };
+
+        cancelButton.Click += (_, _) => dialog.Close(false);
+        okButton.Click += (_, _) => dialog.Close(true);
+        return await dialog.ShowDialog<bool>(owner);
     }
 
     private async Task<bool> IsCurrentPeriodFinalizedAsync()
