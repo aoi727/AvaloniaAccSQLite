@@ -219,6 +219,8 @@ public sealed class MainWindow : Window
         refreshButton.Click += async (_, _) => await LoadReportAsync();
         var saveCarryoverButton = ViewHelpers.SecondaryButton("繰越を保存");
         saveCarryoverButton.Click += async (_, _) => await SaveCarryoverAsync();
+        var generateCarryoverButton = ViewHelpers.SecondaryButton("前年から作成");
+        generateCarryoverButton.Click += async (_, _) => await GenerateCarryoverAsync();
         var saveNoteButton = ViewHelpers.SecondaryButton("注記を保存");
         saveNoteButton.Click += async (_, _) => await SaveReportNoteAsync();
         var exportPdfButton = ViewHelpers.SecondaryButton("PDF出力");
@@ -235,6 +237,7 @@ public sealed class MainWindow : Window
                     {
                         WithMargin(Field("期首繰越収支差額", _openingCarryover, 190), new Thickness(0, 0, 12, 10)),
                         ButtonField(saveCarryoverButton),
+                        WithMargin(ButtonField(generateCarryoverButton), new Thickness(12, 0, 0, 0)),
                         WithMargin(ButtonField(refreshButton), new Thickness(12, 0, 0, 0)),
                         WithMargin(ButtonField(exportPdfButton), new Thickness(12, 0, 0, 0)),
                         WithMargin(_reportStatus, new Thickness(14, 30, 0, 0))
@@ -676,6 +679,89 @@ public sealed class MainWindow : Window
         catch (Exception ex) { SetError(ex.Message); }
     }
 
+    private async Task GenerateCarryoverAsync()
+    {
+        if (_database is null || _company is null) { SetError("先にDBを開いてください。"); return; }
+
+        var fiscalStart = GetFiscalStart();
+        var previousStart = fiscalStart.AddYears(-1);
+        var previousEnd = fiscalStart.AddDays(-1);
+        var existing = await _database.GetOpeningCarryoverAsync(_company.CompanyId, fiscalStart);
+        if (!await ConfirmGenerateCarryoverAsync(fiscalStart, previousStart, previousEnd, existing))
+        {
+            SetMessage("前年からの期首繰越作成を中止しました。", false);
+            return;
+        }
+
+        try
+        {
+            var result = await _database.GenerateOpeningCarryoverFromPreviousFinalizedYearAsync(_company.CompanyId, fiscalStart);
+            _openingCarryover.Text = result.GeneratedOpeningCarryover == 0 ? "" : result.GeneratedOpeningCarryover.ToString("N0");
+            await LoadReportAsync();
+            SetMessage(
+                $"前年確定データから期首繰越を作成しました。前年期首 {FormatAmount(result.PreviousOpeningCarryover)} + 前年収支 {FormatAmount(result.PreviousNetActual)} = {FormatAmount(result.GeneratedOpeningCarryover)}",
+                false);
+        }
+        catch (Exception ex)
+        {
+            SetError(ex.Message);
+        }
+    }
+
+    private async Task<bool> ConfirmGenerateCarryoverAsync(DateTime fiscalStart, DateTime previousStart, DateTime previousEnd, decimal existing)
+    {
+        var owner = TopLevel.GetTopLevel(this) as Window;
+        if (owner is null)
+        {
+            SetError("確認ダイアログを表示できませんでした。");
+            return false;
+        }
+
+        var cancelButton = ViewHelpers.SecondaryButton("キャンセル");
+        var okButton = ViewHelpers.PrimaryButton("作成する");
+        var existingText = existing == 0
+            ? ""
+            : $"現在の期首繰越 {FormatAmount(existing)} は、作成結果で上書きされます。";
+        var dialog = new Window
+        {
+            Title = "期首繰越の自動作成",
+            Width = 470,
+            Height = 260,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Content = new Border
+            {
+                Background = Brushes.White,
+                Padding = new Thickness(22),
+                Child = new StackPanel
+                {
+                    Spacing = 14,
+                    Children =
+                    {
+                        ViewHelpers.Heading("前年確定データから作成しますか", 18),
+                        new TextBlock
+                        {
+                            Text = $"{previousStart:yyyy/MM/dd} - {previousEnd:yyyy/MM/dd} の確定済み報告書から、{fiscalStart:yyyy/MM/dd} 開始年度の期首繰越収支差額を作成します。\n{existingText}".Trim(),
+                            TextWrapping = TextWrapping.Wrap,
+                            Foreground = Brush.Parse("#243044")
+                        },
+                        new StackPanel
+                        {
+                            Orientation = Orientation.Horizontal,
+                            HorizontalAlignment = HorizontalAlignment.Right,
+                            Spacing = 10,
+                            Children = { cancelButton, okButton }
+                        }
+                    }
+                }
+            }
+        };
+
+        cancelButton.Click += (_, _) => dialog.Close(false);
+        okButton.Click += (_, _) => dialog.Close(true);
+        return await dialog.ShowDialog<bool>(owner);
+    }
+
     private async Task LoadReportNoteAsync()
     {
         if (_database is null || _company is null || _loadingReportNote) return;
@@ -996,10 +1082,12 @@ public sealed class MainWindow : Window
 
     private static TextBlock AmountCell(decimal amount, int column, bool emphasized = false)
     {
-        var block = new TextBlock { Text = amount < 0 ? $"△{Math.Abs(amount):N0}" : amount.ToString("N0"), FontWeight = emphasized ? FontWeight.SemiBold : FontWeight.Normal, Foreground = Brush.Parse("#243044"), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+        var block = new TextBlock { Text = FormatAmount(amount), FontWeight = emphasized ? FontWeight.SemiBold : FontWeight.Normal, Foreground = Brush.Parse("#243044"), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(block, column);
         return block;
     }
+
+    private static string FormatAmount(decimal amount) => amount < 0 ? $"△{Math.Abs(amount):N0}" : amount.ToString("N0");
 
     private static Control Place(Control control, int column)
     {

@@ -289,6 +289,35 @@ public sealed class AccountingDatabase
         await command.ExecuteNonQueryAsync();
     }
 
+    public async Task<GeneratedCarryoverResult> GenerateOpeningCarryoverFromPreviousFinalizedYearAsync(
+        int companyId,
+        DateTime fiscalYearStart)
+    {
+        var currentFiscalStart = fiscalYearStart.Date;
+        var previousFiscalStart = currentFiscalStart.AddYears(-1);
+        var previousFiscalEnd = currentFiscalStart.AddDays(-1);
+        var status = await GetPeriodReviewStatusAsync(companyId, previousFiscalStart, previousFiscalEnd);
+        if (status?.Status != "finalized")
+        {
+            throw new InvalidOperationException(
+                $"前年期間 {previousFiscalStart:yyyy/MM/dd} - {previousFiscalEnd:yyyy/MM/dd} が確定されていません。先に前年の年度期間を確定してください。");
+        }
+
+        var categories = await GetCategoriesAsync(companyId);
+        var previousOpeningCarryover = await GetOpeningCarryoverAsync(companyId, previousFiscalStart);
+        var previousNetActual = await GetNetActualAsync(companyId, previousFiscalStart, previousFiscalEnd, categories);
+        var generatedOpeningCarryover = previousOpeningCarryover + previousNetActual;
+        await SaveOpeningCarryoverAsync(companyId, currentFiscalStart, generatedOpeningCarryover);
+
+        return new GeneratedCarryoverResult(
+            currentFiscalStart,
+            previousFiscalStart,
+            previousFiscalEnd,
+            previousOpeningCarryover,
+            previousNetActual,
+            generatedOpeningCarryover);
+    }
+
     public async Task<IReadOnlyList<CashFlowReviewRow>> GetCashFlowReviewRowsAsync(int companyId, DateTime periodStart, DateTime periodEnd)
     {
         const string sql = @"
@@ -1063,3 +1092,11 @@ public sealed class AccountingDatabase
         };
     }
 }
+
+public sealed record GeneratedCarryoverResult(
+    DateTime FiscalYearStart,
+    DateTime PreviousFiscalYearStart,
+    DateTime PreviousFiscalYearEnd,
+    decimal PreviousOpeningCarryover,
+    decimal PreviousNetActual,
+    decimal GeneratedOpeningCarryover);
