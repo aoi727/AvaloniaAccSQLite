@@ -1,74 +1,57 @@
-# AvaloniaAccSQLite
+# SQLiteAcc
 
-Avalonia UI と SQLite を使ったデスクトップ会計アプリです。仕訳入力、元帳、現金出納帳、試算表、貸借対照表、損益計算書、補助科目や取引先管理までをひととおり扱える構成になっています。
+SQLite ベースの会計アプリ群です。
 
-## 主な特徴
+## AccountingApp
 
-- Avalonia ベースのデスクトップ UI
-- SQLite を使ったローカル保存
+`AccountingApp` は、通常の会計入力、マスタ管理、帳票、決算処理を行う親アプリです。
+このアプリ単体で利用できます。
+
+主な機能:
+
 - 勘定科目、補助科目、税区分、取引先の管理
-- 仕訳帳、総勘定元帳、現金出納帳の参照
-- 試算表、貸借対照表、損益計算書の出力
-- 初期科目データとスキーマ SQL を同梱
+- 仕訳入力、定型仕訳、証憑添付
+- 仕訳帳、総勘定元帳、現金出納帳
+- 試算表、貸借対照表、損益計算書、消費税集計表
+- 月次ロック、年度締め、繰越仕訳作成
 
-## 動作環境
+## ReligiousReportApp
 
-- .NET 10 SDK
-- Windows x64 を想定
+`ReligiousReportApp` は、宗教法人向けの運営収支報告書を作成する拡張アプリです。
+`AccountingApp` が作成した SQLite DB ファイルを選択して利用します。
 
-主要な依存関係:
+この拡張アプリは `AccountingApp` の既存会計テーブルを読み取り専用で参照し、宗教法人向けの追加情報だけを `religious_report_*` テーブルに保存します。
+そのため、`AccountingApp` は単体アプリとして完結したまま利用できます。
 
-- `Avalonia 12.0.1`
-- `Microsoft.Data.Sqlite 10.0.7`
+主な機能:
 
-## セットアップ
+- 運営収支分類マスタ
+- 勘定科目の役割設定
+- 任意期間の入出金レビュー
+- 複合仕訳の相手明細別レビュー
+- レビュー後の元仕訳変更検知
+- 期間の確認済み・確定ロック
+- 前期繰越・次期繰越の表示
+- 年度別・分類別予算入力
+- 運営収支報告書プレビュー
+- 運営収支報告書の PDF 出力
 
-1. `appsettings.example.json` を `appsettings.json` にコピーします。
-2. SQLite ファイルの保存先を設定します。
+## Project Layout
 
-```json
-{
-  "ConnectionStrings": {
-    "Default": "Data Source=accounting_app.db"
-  }
-}
+```text
+SQLiteAcc/
+  AccountingApp/
+  ReligiousReportApp/
+  docs/
 ```
 
-環境変数 `ACCOUNTING_APP_CONNECTION` を使って接続先を上書きすることもできます。
+## Build
 
 ```powershell
-$env:ACCOUNTING_APP_CONNECTION="Data Source=accounting_app.db"
+dotnet build .\AccountingApp\AccountingApp.csproj
+dotnet build .\ReligiousReportApp\ReligiousReportApp.csproj
 ```
 
-## 実行方法
+## DB Contract
 
-```powershell
-dotnet run --project AccountingApp.csproj -p:UsedAvaloniaProducts=
-```
-
-## 配布用ビルド
-
-```powershell
-dotnet publish AccountingApp.csproj -c Release
-```
-
-`Release` 構成では単一ファイル配布、トリミング、自己完結配布の設定が入っています。
-
-## データベース関連
-
-- スキーマ: `Database/schema.sql`
-- 初期科目データ: `Database/seed_accounts.csv`
-- シード SQL: `Database/seed_accounts_subaccounts_from_csv.sql`
-- ER 図メモ: `Database/ERD.md`
-
-## ディレクトリ構成
-
-- `Views/`: 画面 UI
-- `Models/`: 画面・帳票用モデル
-- `Data/`: SQLite アクセスと帳票出力
-- `Database/`: スキーマ、シード、ERD
-- `Styles/`: Avalonia スタイル
-
-## 補足
-
-`appsettings.json` はローカル環境ごとの差分が出やすいため、リポジトリには `appsettings.example.json` を含めています。
+`ReligiousReportApp` が依存する DB テーブルと書き込み範囲は [docs/db-contract.md](docs/db-contract.md) を参照してください。
